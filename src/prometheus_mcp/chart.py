@@ -141,21 +141,24 @@ def _label_precision(values: list[float]) -> int:
     return min(8, max(magnitude_precision, spread_precision))
 
 
+_X_CAPTION_INDENT = 11
+_MIN_GAP = 2
+
+
 def _render_x_caption(start: datetime, end: datetime, width: int) -> str:
-    midpoint = start + (end - start) / 2
-    labels = [
-        start.isoformat(timespec="seconds"),
-        midpoint.isoformat(timespec="seconds"),
-        end.isoformat(timespec="seconds"),
-    ]
-    return _three_column_caption(labels, width=width)
-
-
-def _three_column_caption(labels: list[str], *, width: int) -> str:
-    left, middle, right = labels
-    pad_left = " " * 11
-    inner_width = max(0, width - len(left) - len(right))
-    middle_pos = max(0, (inner_width - len(middle)) // 2)
-    spaces_after_left = " " * middle_pos
-    spaces_after_middle = " " * max(0, inner_width - middle_pos - len(middle))
-    return f"{pad_left}{left}{spaces_after_left}{middle}{spaces_after_middle}{right}"
+    left = start.isoformat(timespec="seconds")
+    right = end.isoformat(timespec="seconds")
+    middle = (start + (end - start) / 2).isoformat(timespec="seconds")
+    if width >= len(left) + len(middle) + len(right) + 2 * _MIN_GAP:
+        inner_width = width - len(left) - len(right)
+        middle_pos = (inner_width - len(middle)) // 2
+        return (
+            " " * _X_CAPTION_INDENT
+            + left
+            + " " * middle_pos
+            + middle
+            + " " * (inner_width - middle_pos - len(middle))
+            + right
+        )
+    gap = max(_MIN_GAP, width - len(left) - len(right))
+    return " " * _X_CAPTION_INDENT + left + " " * gap + right
