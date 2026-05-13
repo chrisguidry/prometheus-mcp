@@ -3,6 +3,6 @@
 Importing this package registers every tool on ``prometheus_mcp.server.mcp``.
 """
 
-from prometheus_mcp.tools import admin, discovery
+from prometheus_mcp.tools import admin, discovery, query
 
-__all__ = ["admin", "discovery"]
+__all__ = ["admin", "discovery", "query"]

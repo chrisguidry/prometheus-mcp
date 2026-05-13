@@ -343,7 +343,42 @@ async def test_query_passes_expr_and_time(
     sent = route.calls.last.request
     assert sent.url.params["query"] == "up"
     assert sent.url.params["time"] == f"{now.timestamp():.3f}"
-    assert sent.url.params["timeout"] == "2.000s"
+    assert sent.url.params["timeout"] == "2s"
+
+
+async def test_query_formats_fractional_timeout_as_milliseconds(
+    server: ServerConfig, mock_router: respx.Router
+) -> None:
+    route = mock_router.get("https://prom.example/api/v1/query").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "success", "data": {"resultType": "vector", "result": []}},
+        )
+    )
+    async with PrometheusClient(server) as client:
+        await client.query("up", timeout=timedelta(milliseconds=500))
+    assert route.calls.last.request.url.params["timeout"] == "500ms"
+
+
+async def test_query_range_formats_fractional_step_as_float(
+    server: ServerConfig,
+    mock_router: respx.Router,
+    now: datetime,
+) -> None:
+    route = mock_router.get("https://prom.example/api/v1/query_range").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "success", "data": {"resultType": "matrix", "result": []}},
+        )
+    )
+    async with PrometheusClient(server) as client:
+        await client.query_range(
+            "up",
+            start=now - timedelta(seconds=10),
+            end=now,
+            step=timedelta(milliseconds=500),
+        )
+    assert route.calls.last.request.url.params["step"] == "0.5"
 
 
 async def test_query_omits_optional_params_when_unset(
@@ -410,8 +445,8 @@ async def test_query_range_passes_all_args(
     assert sent.url.params["query"] == "rate(up[5m])"
     assert sent.url.params["start"] == f"{start.timestamp():.3f}"
     assert sent.url.params["end"] == f"{now.timestamp():.3f}"
-    assert sent.url.params["step"] == "30.000s"
-    assert sent.url.params["timeout"] == "5.000s"
+    assert sent.url.params["step"] == "30"
+    assert sent.url.params["timeout"] == "5s"
 
 
 async def test_get_client_caches_per_slug(

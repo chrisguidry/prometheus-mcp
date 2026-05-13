@@ -210,7 +210,7 @@ class PrometheusClient:
             ("query", expr),
             ("start", _format_time(start)),
             ("end", _format_time(end)),
-            ("step", _format_duration(step)),
+            ("step", _format_step(step)),
         ]
         if timeout is not None:
             params.append(("timeout", _format_duration(timeout)))
@@ -256,8 +256,22 @@ def _format_time(value: datetime) -> str:
     return f"{value.timestamp():.3f}"
 
 
+def _format_step(value: timedelta) -> str:
+    """Prometheus accepts numeric seconds (int or float) for ``step``."""
+    seconds = value.total_seconds()
+    return str(int(seconds)) if seconds.is_integer() else f"{seconds:g}"
+
+
 def _format_duration(value: timedelta) -> str:
-    return f"{value.total_seconds():.3f}s"
+    """Prometheus duration string (e.g. ``30s``, ``500ms``).
+
+    Whole seconds render as ``Ns``; fractional values fall back to ``Nms``
+    since Prometheus's duration grammar rejects fractional second units.
+    """
+    seconds = value.total_seconds()
+    if seconds.is_integer():
+        return f"{int(seconds)}s"
+    return f"{int(round(seconds * 1_000))}ms"
 
 
 _clients: dict[str, PrometheusClient] = {}
