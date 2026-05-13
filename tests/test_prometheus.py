@@ -100,6 +100,64 @@ async def test_request_translates_http_error(
         with pytest.raises(PrometheusTransportError) as excinfo:
             await client.request("labels")
     assert excinfo.value.status_code == 503
+    assert "upstream down" in str(excinfo.value)
+
+
+async def test_http_error_surfaces_prometheus_error_body(
+    server: ServerConfig, mock_router: respx.Router
+) -> None:
+    mock_router.get("https://prom.example/api/v1/label/job/values").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "status": "error",
+                "errorType": "bad_data",
+                "error": "match[] required",
+            },
+        )
+    )
+    async with PrometheusClient(server) as client:
+        with pytest.raises(PrometheusTransportError) as excinfo:
+            await client.request("label/job/values")
+    msg = str(excinfo.value)
+    assert "HTTP 400" in msg
+    assert "bad_data" in msg
+    assert "match[] required" in msg
+
+
+async def test_http_error_with_empty_body(
+    server: ServerConfig, mock_router: respx.Router
+) -> None:
+    mock_router.get("https://prom.example/api/v1/labels").mock(
+        return_value=httpx.Response(500, text="")
+    )
+    async with PrometheusClient(server) as client:
+        with pytest.raises(PrometheusTransportError) as excinfo:
+            await client.request("labels")
+    assert str(excinfo.value).endswith("HTTP 500")
+
+
+async def test_http_error_with_unparseable_json_object(
+    server: ServerConfig, mock_router: respx.Router
+) -> None:
+    mock_router.get("https://prom.example/api/v1/labels").mock(
+        return_value=httpx.Response(500, json=["not", "an", "object"])
+    )
+    async with PrometheusClient(server) as client:
+        with pytest.raises(PrometheusTransportError, match="HTTP 500"):
+            await client.request("labels")
+
+
+async def test_http_error_with_json_object_lacking_error_field(
+    server: ServerConfig, mock_router: respx.Router
+) -> None:
+    mock_router.get("https://prom.example/api/v1/labels").mock(
+        return_value=httpx.Response(429, json={"retry_after": 30})
+    )
+    async with PrometheusClient(server) as client:
+        with pytest.raises(PrometheusTransportError) as excinfo:
+            await client.request("labels")
+    assert str(excinfo.value).endswith("HTTP 429")
 
 
 async def test_request_translates_transport_error(

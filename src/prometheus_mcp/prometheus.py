@@ -97,8 +97,9 @@ class PrometheusClient:
             ) from exc
 
         if response.status_code >= 400:
+            detail = _try_extract_error_detail(response)
             raise PrometheusTransportError(
-                f"{response.request.url} returned HTTP {response.status_code}",
+                f"{response.request.url} returned HTTP {response.status_code}{detail}",
                 status_code=response.status_code,
             )
 
@@ -214,6 +215,22 @@ class PrometheusClient:
         if timeout is not None:
             params.append(("timeout", _format_duration(timeout)))
         return await self.request("query_range", params=params)
+
+
+def _try_extract_error_detail(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return f": {text[:200]}" if text else ""
+    if isinstance(body, dict):
+        payload = cast(dict[str, Any], body)
+        error = payload.get("error") or payload.get("message")
+        if isinstance(error, str) and error:
+            error_type = payload.get("errorType")
+            prefix = f" ({error_type})" if isinstance(error_type, str) else ""
+            return f"{prefix}: {error}"
+    return ""
 
 
 def _build_params(
