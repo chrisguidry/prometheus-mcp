@@ -16,16 +16,13 @@ from pydantic import Field
 from prometheus_mcp import server as server_module
 from prometheus_mcp.prometheus import get_client
 from prometheus_mcp.server import mcp
-from prometheus_mcp.time_range import parse_range, parse_step, parse_time
+from prometheus_mcp.time_range import (
+    format_duration_human,
+    parse_range,
+    parse_step,
+    parse_time,
+)
 from prometheus_mcp.tools.discovery import Limit, Offset, ServerSlug
-
-
-def _humanize_step(seconds: float) -> str:
-    return (
-        f"{int(seconds)}s"
-        if seconds.is_integer()
-        else f"{int(round(seconds * 1_000))}ms"
-    )
 
 
 _READ_ONLY = {
@@ -177,6 +174,6 @@ async def query_range(
         "resolved": {
             "start": start_dt.isoformat(),
             "end": end_dt.isoformat(),
-            "step": _humanize_step(step_dt.total_seconds()),
+            "step": format_duration_human(step_dt),
         },
     }

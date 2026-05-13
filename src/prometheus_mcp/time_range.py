@@ -19,11 +19,20 @@ from datetime import datetime, timedelta, timezone
 
 __all__ = [
     "TimeRangeError",
+    "format_duration_human",
     "parse_duration",
     "parse_range",
     "parse_step",
     "parse_time",
 ]
+
+
+def format_duration_human(value: timedelta) -> str:
+    """Render a duration for display (e.g. ``"30s"`` or ``"500ms"``)."""
+    seconds = value.total_seconds()
+    if seconds.is_integer():
+        return f"{int(seconds)}s"
+    return f"{int(round(seconds * 1_000))}ms"
 
 
 class TimeRangeError(ValueError):

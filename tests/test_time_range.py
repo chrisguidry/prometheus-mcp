@@ -6,11 +6,20 @@ import pytest
 
 from prometheus_mcp.time_range import (
     TimeRangeError,
+    format_duration_human,
     parse_duration,
     parse_range,
     parse_step,
     parse_time,
 )
+
+
+def test_format_duration_human_whole_seconds() -> None:
+    assert format_duration_human(timedelta(seconds=30)) == "30s"
+
+
+def test_format_duration_human_fractional_seconds_renders_as_ms() -> None:
+    assert format_duration_human(timedelta(milliseconds=500)) == "500ms"
 
 
 @pytest.fixture
