@@ -132,12 +132,13 @@ def parse_range(
     step: str | int | float | None = None,
     *,
     now: datetime | None = None,
+    target_samples: int = _TARGET_RANGE_POINTS,
 ) -> tuple[datetime, datetime, timedelta]:
     """Resolve ``start`` / ``end`` / ``step`` for a range query.
 
     ``end`` defaults to ``"now"`` and ``start`` to ``"now-1h"``. When
     ``step`` is unset, it is picked so that the range yields roughly
-    ``_TARGET_RANGE_POINTS`` samples with a 15s floor.
+    ``target_samples`` samples with a 15s floor.
     """
     reference = now if now is not None else datetime.now(timezone.utc)
     end_dt = parse_time(end if end is not None else "now", now=reference)
@@ -149,7 +150,7 @@ def parse_range(
 
     if step is None:
         duration_seconds = (end_dt - start_dt).total_seconds()
-        seconds = max(_DEFAULT_STEP_SECONDS, duration_seconds / _TARGET_RANGE_POINTS)
+        seconds = max(_DEFAULT_STEP_SECONDS, duration_seconds / target_samples)
         step_dt = timedelta(seconds=seconds)
     else:
         step_dt = parse_step(step)

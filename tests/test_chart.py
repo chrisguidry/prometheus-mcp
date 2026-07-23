@@ -84,6 +84,47 @@ def test_render_chart_multi_series_has_numbered_legend(
     assert "[2] b" in chart
 
 
+def test_render_chart_includes_title(window: tuple[datetime, datetime]) -> None:
+    start, end = window
+    series = ChartSeries(label="{}", points=_ramp_points(start, 30))
+    chart = render_chart(
+        [series],
+        start=start,
+        end=end,
+        width=40,
+        height=8,
+        title="sum(rate(up[5m]))",
+    )
+    assert chart.splitlines()[0] == "sum(rate(up[5m]))"
+
+
+def test_render_chart_legend_includes_series_stats(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    series = ChartSeries(label="ramp", points=_ramp_points(start, 30))
+    chart = render_chart([series], start=start, end=end, width=40, height=8)
+    legend = chart.splitlines()[0]
+    assert "min 0.00" in legend
+    assert "avg 14.50" in legend
+    assert "max 29.00" in legend
+    assert "last 29.00" in legend
+
+
+def test_render_chart_multi_series_legend_stats(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    one = ChartSeries(label="a", points=_ramp_points(start, 30))
+    two = ChartSeries(label="b", points=_ramp_points(start, 30, reverse=True))
+    chart = render_chart([one, two], start=start, end=end, width=40, height=8)
+    lines = chart.splitlines()
+    assert lines[0].startswith("[1] a")
+    assert "last 29.00" in lines[0]
+    assert lines[1].startswith("[2] b")
+    assert "last 0.00" in lines[1]
+
+
 def test_render_chart_handles_all_none_values(
     window: tuple[datetime, datetime],
 ) -> None:
@@ -91,6 +132,79 @@ def test_render_chart_handles_all_none_values(
     series = ChartSeries(label="empty", points=_evenly_sampled(start, 5, [None] * 5))
     chart = render_chart([series], start=start, end=end, width=40, height=6)
     assert "empty" in chart
+    assert "no data" in chart.splitlines()[0]
+
+
+def _gappy_points(start: datetime) -> list[tuple[float, float | None]]:
+    head: list[tuple[float, float | None]] = [
+        (start.timestamp() + i * 15, 1.0) for i in range(9)
+    ]
+    tail: list[tuple[float, float | None]] = [
+        (start.timestamp() + 480 + i * 15, 2.0) for i in range(9)
+    ]
+    return head + tail
+
+
+def test_render_chart_breaks_line_across_gaps(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    series = ChartSeries(label="gappy", points=_gappy_points(start))
+    chart = render_chart(
+        [series], start=start, end=end, width=40, height=6, max_gap_seconds=30
+    )
+    assert "no data" in chart.splitlines()[0]
+
+
+def test_render_chart_ignores_trailing_scrape_lag(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    points: list[tuple[float, float | None]] = [
+        (start.timestamp() + i * 15, 1.0) for i in range(39)
+    ]
+    series = ChartSeries(label="fresh", points=points)
+    chart = render_chart(
+        [series], start=start, end=end, width=40, height=6, max_gap_seconds=30
+    )
+    assert "no data" not in chart.splitlines()[0]
+
+
+def test_render_chart_reports_long_trailing_gap(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    points: list[tuple[float, float | None]] = [
+        (start.timestamp() + i * 15, 1.0) for i in range(20)
+    ]
+    series = ChartSeries(label="stopped", points=points)
+    chart = render_chart(
+        [series], start=start, end=end, width=40, height=6, max_gap_seconds=30
+    )
+    assert "no data 5" in chart.splitlines()[0]
+
+
+def test_render_chart_reports_long_leading_gap(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    points: list[tuple[float, float | None]] = [
+        (start.timestamp() + 300 + i * 15, 1.0) for i in range(21)
+    ]
+    series = ChartSeries(label="newborn", points=points)
+    chart = render_chart(
+        [series], start=start, end=end, width=40, height=6, max_gap_seconds=30
+    )
+    assert "no data 50% of window" in chart.splitlines()[0]
+
+
+def test_render_chart_interpolates_gaps_without_max_gap(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    series = ChartSeries(label="gappy", points=_gappy_points(start))
+    chart = render_chart([series], start=start, end=end, width=40, height=6)
+    assert "no data" not in chart.splitlines()[0]
 
 
 def test_render_chart_handles_gaps_between_valid_points(

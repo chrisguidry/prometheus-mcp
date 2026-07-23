@@ -12,6 +12,12 @@ def test_server_name() -> None:
     assert mcp.name == "prometheus-mcp"
 
 
+def test_server_instructions_describe_the_workflow() -> None:
+    assert mcp.instructions is not None
+    assert "chart_range" in mcp.instructions
+    assert "query_range" in mcp.instructions
+
+
 def test_main_calls_mcp_run(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
     monkeypatch.setattr(entrypoint.mcp, "run", lambda: calls.append(True))

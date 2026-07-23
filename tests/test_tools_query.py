@@ -83,6 +83,54 @@ async def test_instant_query_pages_vector_results(
     assert result["total_series"] == 5
 
 
+async def test_instant_query_hints_on_empty_result(
+    servers: dict[str, ServerConfig], mock_router: respx.Router
+) -> None:
+    mock_router.get("https://prom.example/api/v1/query").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "success", "data": {"resultType": "vector", "result": []}},
+        )
+    )
+    result = await query(server="prefect", expr="up")
+    assert result["total_series"] == 0
+    assert "lookback" in result["hint"]
+    assert "chart_range" in result["hint"]
+
+
+async def test_instant_query_no_hint_when_series_match(
+    servers: dict[str, ServerConfig], mock_router: respx.Router
+) -> None:
+    mock_router.get("https://prom.example/api/v1/query").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "data": {
+                    "resultType": "vector",
+                    "result": [{"metric": {}, "value": [1_780_000_000, "1"]}],
+                },
+            },
+        )
+    )
+    result = await query(server="prefect", expr="up")
+    assert "hint" not in result
+
+
+async def test_query_range_hints_on_empty_result(
+    servers: dict[str, ServerConfig], mock_router: respx.Router
+) -> None:
+    mock_router.get("https://prom.example/api/v1/query_range").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "success", "data": {"resultType": "matrix", "result": []}},
+        )
+    )
+    result = await query_range(server="prefect", expr="up")
+    assert result["total_series"] == 0
+    assert "chart_range" in result["hint"]
+
+
 async def test_instant_query_passes_through_scalar(
     servers: dict[str, ServerConfig], mock_router: respx.Router
 ) -> None:
@@ -158,7 +206,7 @@ async def test_query_range_picks_default_step(
         start="2026-05-13T11:00:00Z",
         end="2026-05-13T12:00:00Z",
     )
-    assert route.calls.last.request.url.params["step"] == "15"
+    assert route.calls.last.request.url.params["step"] == "36"
 
 
 async def test_query_range_pages_matrix_results(

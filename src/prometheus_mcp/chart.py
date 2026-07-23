@@ -4,10 +4,12 @@ Pure rendering — no Prometheus or MCP imports — so the renderer can be
 exercised with hand-built data in tests. The tool layer adapts a range
 query response into ``ChartSeries`` and calls :func:`render_chart`.
 
-Multiple series are stacked into one chart with a numbered legend; the
-y-axis labels come from ``asciichartpy``'s auto-scaling, and a short
-caption below the chart shows ``start``, midpoint, and ``end``
-timestamps so a reader has anchors for the x-axis.
+Multiple series are stacked into one chart with a numbered legend. Each
+legend line reports min / avg / max / last for its series, plus how much
+of the window had no data when gap detection is on. The y-axis labels
+come from ``asciichartpy``'s auto-scaling, and a short caption below the
+chart shows ``start``, midpoint, and ``end`` timestamps so a reader has
+anchors for the x-axis.
 """
 
 from __future__ import annotations
@@ -57,12 +59,29 @@ def render_chart(
     end: datetime,
     width: int = 80,
     height: int = 18,
+    title: str | None = None,
+    max_gap_seconds: float | None = None,
 ) -> str:
-    """Render one or more series as a single ASCII chart with a caption."""
+    """Render one or more series as a single ASCII chart with a caption.
+
+    When ``max_gap_seconds`` is set, stretches between consecutive samples
+    further apart than that render as blank space instead of an
+    interpolated line, and the legend reports how much of the window had
+    no data.
+    """
     if not series:
         return "(no data)"
 
-    resampled = [_resample(s.points, start=start, end=end, width=width) for s in series]
+    resampled = [
+        _resample(
+            s.points,
+            start=start,
+            end=end,
+            width=width,
+            max_gap_seconds=max_gap_seconds,
+        )
+        for s in series
+    ]
     config: dict[str, Any] = {
         "height": height,
         "format": _label_format_string(resampled),
@@ -70,14 +89,87 @@ def render_chart(
     plot_input: Any = resampled[0] if len(resampled) == 1 else resampled
     chart_str: str = asciichartpy.plot(plot_input, config)
 
+    column_seconds = (end - start).total_seconds() / max(1, width - 1)
+    edge_tolerance = (
+        math.ceil(max_gap_seconds / column_seconds) if max_gap_seconds else 0
+    )
+
     parts: list[str] = []
-    if len(series) > 1:
-        parts.extend(f"[{i + 1}] {s.label}" for i, s in enumerate(series))
-    else:
-        parts.append(series[0].label)
+    if title:
+        parts.append(title)
+    parts.extend(_legend(series, resampled, edge_tolerance))
     parts.append(chart_str)
     parts.append(_render_x_caption(start, end, width))
     return "\n".join(parts)
+
+
+def _legend(
+    series: list[ChartSeries],
+    resampled: list[list[float]],
+    edge_tolerance: int,
+) -> list[str]:
+    stats = [_series_stats(s.points) for s in series]
+    finite = [value for stat in stats if stat is not None for value in stat]
+    precision = _label_precision(finite)
+    numbered = len(series) > 1
+    lines: list[str] = []
+    for index, (entry, stat, columns) in enumerate(zip(series, stats, resampled)):
+        prefix = f"[{index + 1}] " if numbered else ""
+        missing = _missing_columns(columns, edge_tolerance)
+        lines.append(
+            f"{prefix}{entry.label} — {_describe(stat, missing, len(columns), precision)}"
+        )
+    return lines
+
+
+def _missing_columns(columns: list[float], edge_tolerance: int) -> int:
+    """Count gap columns, forgiving short runs at either edge.
+
+    A brief empty stretch at the window's edges is scrape lag or window
+    alignment, not absent data; runs longer than ``edge_tolerance``
+    columns are real gaps and stay counted.
+    """
+    missing = sum(1 for value in columns if math.isnan(value))
+    if not missing or missing == len(columns):
+        return missing
+    leading = next(i for i, value in enumerate(columns) if not math.isnan(value))
+    trailing = next(
+        i for i, value in enumerate(reversed(columns)) if not math.isnan(value)
+    )
+    if leading <= edge_tolerance:
+        missing -= leading
+    if trailing <= edge_tolerance:
+        missing -= trailing
+    return missing
+
+
+def _series_stats(
+    points: list[tuple[float, float | None]],
+) -> tuple[float, float, float, float] | None:
+    valid = sorted((ts, value) for ts, value in points if value is not None)
+    if not valid:
+        return None
+    values = [value for _, value in valid if value is not None]
+    return (min(values), sum(values) / len(values), max(values), values[-1])
+
+
+def _describe(
+    stat: tuple[float, float, float, float] | None,
+    missing: int,
+    total: int,
+    precision: int,
+) -> str:
+    if stat is None:
+        return "no data"
+    minimum, mean, maximum, last = stat
+    text = (
+        f"min {minimum:,.{precision}f}, avg {mean:,.{precision}f}, "
+        f"max {maximum:,.{precision}f}, last {last:,.{precision}f}"
+    )
+    if missing:
+        percent = max(1, round(100 * missing / total))
+        text += f", no data {percent}% of window"
+    return text
 
 
 def _resample(
@@ -86,6 +178,7 @@ def _resample(
     start: datetime,
     end: datetime,
     width: int,
+    max_gap_seconds: float | None = None,
 ) -> list[float]:
     start_ts = start.timestamp()
     end_ts = end.timestamp()
@@ -97,18 +190,30 @@ def _resample(
     values = [v for _, v in valid if v is not None]
     span = max(1, width - 1)
     return [
-        _interpolate(start_ts + (end_ts - start_ts) * col / span, times, values)
+        _interpolate(
+            start_ts + (end_ts - start_ts) * col / span,
+            times,
+            values,
+            max_gap_seconds,
+        )
         for col in range(width)
     ]
 
 
-def _interpolate(target: float, times: list[float], values: list[float]) -> float:
+def _interpolate(
+    target: float,
+    times: list[float],
+    values: list[float],
+    max_gap_seconds: float | None,
+) -> float:
     if target < times[0] or target > times[-1]:
         return math.nan
     idx = bisect.bisect_left(times, target)
     if idx == 0 or times[idx] == target:
         return values[idx]
     t0, t1 = times[idx - 1], times[idx]
+    if max_gap_seconds is not None and t1 - t0 > max_gap_seconds:
+        return math.nan
     v0, v1 = values[idx - 1], values[idx]
     return v0 + (v1 - v0) * (target - t0) / (t1 - t0)
 

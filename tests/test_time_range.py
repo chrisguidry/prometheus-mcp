@@ -165,6 +165,16 @@ def test_parse_range_picks_step_for_long_window(now: datetime) -> None:
     assert step.total_seconds() == 24 * 3600 / 360
 
 
+def test_parse_range_honors_target_samples(now: datetime) -> None:
+    _, _, step = parse_range(start="now-1h", end="now", now=now, target_samples=100)
+    assert step == timedelta(seconds=36)
+
+
+def test_parse_range_target_samples_keeps_step_floor(now: datetime) -> None:
+    _, _, step = parse_range(start="now-5m", end="now", now=now, target_samples=100)
+    assert step == timedelta(seconds=15)
+
+
 def test_parse_range_respects_explicit_step(now: datetime) -> None:
     _, _, step = parse_range(start="now-1h", step="5m", now=now)
     assert step == timedelta(minutes=5)

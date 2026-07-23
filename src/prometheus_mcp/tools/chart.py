@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Annotated, Any
+from typing import Annotated
 
+from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from prometheus_mcp import server as server_module
@@ -13,12 +14,7 @@ from prometheus_mcp.prometheus import get_client
 from prometheus_mcp.server import mcp
 from prometheus_mcp.time_range import format_duration_human, parse_range
 from prometheus_mcp.tools.discovery import ServerSlug
-from prometheus_mcp.tools.query import (
-    EndArgument,
-    PromQL,
-    StartArgument,
-    StepArgument,
-)
+from prometheus_mcp.tools.query import EndArgument, PromQL, StartArgument
 
 _READ_ONLY = {
     "readOnlyHint": True,
@@ -54,6 +50,28 @@ MaxSeries = Annotated[
         ),
     ),
 ]
+ChartStepArgument = Annotated[
+    str | None,
+    Field(
+        default=None,
+        description=(
+            "Sample step as a duration ('15s', '1m', '1h30m') or numeric "
+            "seconds. When omitted, picks a step targeting ~360 samples with "
+            "a 15s floor; the renderer resamples to the chart width either "
+            "way."
+        ),
+    ),
+]
+
+# Stretches longer than this many steps between samples render as blank
+# space rather than an interpolated line.
+_GAP_STEPS = 1.5
+
+_EMPTY_HINT = (
+    "No series matched in this window. The metric may not exist, the label "
+    "selectors may not match, or there may be no samples in this time range "
+    "— try a wider window, or `list_series` to check what exists."
+)
 
 
 def _parse_value(raw: object) -> float | None:
@@ -64,70 +82,101 @@ def _parse_value(raw: object) -> float | None:
     return None if math.isnan(value) else value
 
 
+def _label_cardinalities(metrics: list[dict[str, str]]) -> dict[str, int]:
+    seen: dict[str, set[str]] = {}
+    for metric in metrics:
+        for key, value in metric.items():
+            seen.setdefault(key, set()).add(value)
+    return {
+        key: len(values)
+        for key, values in sorted(seen.items(), key=lambda kv: (len(kv[1]), kv[0]))
+    }
+
+
+def _too_many_series_text(
+    total: int,
+    max_series: int,
+    cardinalities: dict[str, int],
+    examples: list[str],
+    hint: str,
+) -> str:
+    lines = [f"Too many series to chart: {total} series (max_series={max_series})."]
+    lines.append("")
+    lines.append("Label cardinalities:")
+    lines.extend(f"  {key}: {count}" for key, count in cardinalities.items())
+    lines.append("")
+    lines.append("Example series:")
+    lines.extend(f"  {label}" for label in examples)
+    lines.append("")
+    lines.append(hint)
+    return "\n".join(lines)
+
+
 @mcp.tool(annotations={"title": "Chart a range query", **_READ_ONLY})
 async def chart_range(
     server: ServerSlug,
     expr: PromQL,
     start: StartArgument = "now-1h",
     end: EndArgument = "now",
-    step: StepArgument = None,
+    step: ChartStepArgument = None,
     width: ChartWidth = 80,
     height: ChartHeight = 18,
     max_series: MaxSeries = 5,
-) -> dict[str, Any]:
-    """Run a range query and render the result as an ASCII chart.
+) -> ToolResult:
+    """Run a range query and render it as an ASCII chart — the recommended
+    first step for any question about how a metric behaves over time.
 
-    Useful when an agent wants to *see* the shape of a metric rather than
-    digest raw points. The returned ``chart`` field is a single string —
-    legend, plot, and timestamp caption — that can be passed straight to
-    another agent or printed to a terminal.
+    The chart compresses a range query into a few hundred tokens: the plot
+    shows trend, spikes, dips, gaps, and periodicity, and the legend
+    reports min / avg / max / last for every series, which often answers
+    the question without another call. ``query_range`` returns the same
+    window as raw samples at many times the size — reach for it only when
+    you need exact values, and narrow the window first using what the
+    chart shows.
 
-    Refuses to draw when more than ``max_series`` series come back: an
-    over-plotted chart is unreadable. Wrap the expression in ``topk(...)``
-    or add label selectors and retry.
+    Missing data renders as blank space, and the legend notes what
+    fraction of the window had no samples.
+
+    Refuses to draw when more than ``max_series`` series come back;
+    the response then summarizes label cardinalities so you can pick a
+    label to aggregate by (``sum by (...)``), filter with selectors, or
+    wrap the expression in ``topk(...)`` and retry.
     """
     start_dt, end_dt, step_dt = parse_range(start, end, step)
-    resolved = {
-        "start": start_dt.isoformat(),
-        "end": end_dt.isoformat(),
-        "step": format_duration_human(step_dt),
-    }
+    window = (
+        f"Queried {server} from {start_dt.isoformat(timespec='seconds')} "
+        f"to {end_dt.isoformat(timespec='seconds')} "
+        f"(step {format_duration_human(step_dt)})."
+    )
     client = get_client(server, server_module.SERVERS)
     payload = await client.query_range(expr, start=start_dt, end=end_dt, step=step_dt)
 
     result_type = payload.get("resultType")
     raw_series = payload.get("result") or []
     if result_type != "matrix":
-        return {
-            "server": server,
-            "error": (
+        return ToolResult(
+            content=(
                 f"chart_range expects a matrix result, got {result_type!r}. "
                 "Use `query_range` with an expression that returns a matrix."
-            ),
-            "resolved": resolved,
-        }
+            )
+        )
+
+    if not raw_series:
+        return ToolResult(content=f"(no data)\n\n{window}\n\n{_EMPTY_HINT}")
 
     labels = [format_series_label(s.get("metric", {})) for s in raw_series]
-    if not raw_series:
-        return {
-            "server": server,
-            "chart": "(no data)",
-            "series": [],
-            "resolved": resolved,
-        }
     if len(raw_series) > max_series:
-        return {
-            "server": server,
-            "too_many_series": True,
-            "total_series": len(raw_series),
-            "max_series": max_series,
-            "series": labels,
-            "hint": (
-                "Narrow the result with a `topk(N, ...)` wrapper or by adding "
-                "label selectors, then retry."
-            ),
-            "resolved": resolved,
-        }
+        cardinalities = _label_cardinalities([s.get("metric", {}) for s in raw_series])
+        hint = (
+            "Aggregate with `sum by (<label>) (...)` using a low-cardinality "
+            "label, narrow with label selectors, or wrap the expression in "
+            f"`topk({max_series}, ...)`, then retry."
+        )
+        return ToolResult(
+            content=_too_many_series_text(
+                len(raw_series), max_series, cardinalities, labels[:3], hint
+            )
+        )
 
     chart_series = [
         ChartSeries(
@@ -145,10 +194,7 @@ async def chart_range(
         end=end_dt,
         width=width,
         height=height,
+        title=expr,
+        max_gap_seconds=step_dt.total_seconds() * _GAP_STEPS,
     )
-    return {
-        "server": server,
-        "chart": chart_string,
-        "series": labels,
-        "resolved": resolved,
-    }
+    return ToolResult(content=chart_string)

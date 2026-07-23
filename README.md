@@ -52,6 +52,12 @@ Or as a module: `python -m prometheus_mcp`.
 All tools take a `server` slug to select which backend to query. They
 are read-only and idempotent.
 
+The tools are designed around a workflow that keeps an agent's context
+small: discover what a server contains, look at the *shape* of a metric
+with a cheap ASCII chart, then zoom into a narrow window with a raw
+query only when exact values matter. The server publishes this workflow
+as MCP instructions so agents pick it up automatically.
+
 ### Discovery
 
 | Tool             | What it does                                                  |
@@ -77,12 +83,15 @@ chunks.
 Both tools pass PromQL through unchanged. Time arguments accept
 `"now"`, `"now-5h"`, `"now+30m"`, bare `"-5h"` / `"+2h"`, ISO / RFC-3339
 timestamps, and Unix epoch numerics (seconds or ms, auto-detected by
-magnitude). `query_range` picks a `step` that targets ~360 samples
+magnitude). `query_range` picks a `step` that targets ~100 samples
 with a 15s floor when none is given, and returns a `resolved` block
 with the actual `start` / `end` / `step` the server saw.
 
 Vector and matrix results page by series (`series_limit` /
-`series_offset`); each series's samples pass through untouched.
+`series_offset`); each series's samples pass through untouched. An
+empty result carries a `hint` explaining the likely reasons — the
+metric may not exist, or it may simply have no samples in that window —
+so an agent doesn't mistake an outage for a metric that never was.
 
 ### Chart
 
@@ -90,35 +99,49 @@ Vector and matrix results page by series (`series_limit` /
 | ------------- | ------------------------------------------------------- |
 | `chart_range` | Run a range query and render the result as ASCII art.   |
 
-`chart_range` returns a single string — series legend, plot, timestamp
-caption — that you can pass straight to another agent or print to a
-terminal:
+`chart_range` is the recommended first step for any question about how
+a metric behaves over time: it compresses a range query into a few
+hundred tokens where the raw samples would cost tens of thousands. The
+chart arrives as plain text — expression title, per-series legend,
+plot, timestamp caption — ready to read or pass along:
 
 ```
-go_memstats_heap_alloc_bytes{instance="localhost:9090", job="prometheus"}
-312,951,928  ┤
-301,493,769  ┤                          ╭╮    ╭╮            ╭╮          ╭╮
-290,035,610  ┤ ╭╮              ╭╮       ││    ││            ││          ││     ╭╮
-278,577,452  ┤ ││╭╮            ││       ││    ││    ╭╮  ╭╮  ││╭╮  ╭╮    ││   ╭╮││╭╮
-267,119,293  ┼╮││││  ╭╮  ╭╮    ││       ││╭╮  ││    ││╭╮││  ││││╭╮││╭╮  ││ ╭╮││││││╭╴
-255,661,134  ┤│││││  ││╭╮││    ││ ╭╮    ││││  ││    ││││││╭╮││││││││││  ││ │││││││││
-244,202,975  ┤│││││  ││││││╭╮╭╮││ ││╭╮  ││││  ││╭╮ ╭╯│││││││││││││││││  │╰╮│││││││││
-232,744,817  ┤│││││╭╮│││││││╰╯│││ ││││  ││││  ││││ │ │││││││││││││││││ ╭╯ ││││││││││
-221,286,658  ┤││││││││││╰╯││  ╰╯│ ││││ ╭╯│││ ╭╯╰╯╰╮│ ╰╯││╰╯││││╰╯││││╰╮│  ││╰╯││││││
-209,828,499  ┤╰╯╰╯││││││  ││    │ ││││╭╯ ╰╯╰╮│    ││   ││  ╰╯╰╯  ││││ ╰╯  ││  ││╰╯││
-198,370,340  ┤    ╰╯╰╯││  ││    │ │││╰╯     ╰╯    ││   ││        ││╰╯     ││  ╰╯  ╰╯
-186,912,182  ┤        ╰╯  ││    ╰╮│││             ╰╯   ╰╯        ╰╯       ╰╯
-175,454,023  ┤            ╰╯     ││││
-163,995,864  ┤                   ╰╯╰╯
-           2026-05-13T13:40:20+00:00                      2026-05-13T14:40:20+00:00
+sum(go_memstats_heap_alloc_bytes)
+{} — min 682,170,624, avg 722,347,844, max 779,258,192, last 735,480,312
+778,101,047  ┤
+772,891,833  ┤               ╭╮
+767,682,619  ┤               ││                                ╭╮
+762,473,405  ┤              ╭╯│                                ││
+757,264,192  ┤              │ │                ╭╮              ││
+752,054,978  ┤              │ │            ╭╮  ││              ││
+746,845,764  ┤              │ │           ╭╯│╭─╯│             ╭╯│               ╭╮
+741,636,550  ┤╭╮            │ │           │ ││  │             │ │ ╭╮            ││
+736,427,337  ┤││      ╭╮    │ │      ╭╮   │ ││  │    ╭╮╭╮     │ │ ││╭╮          ││    ╭─╮
+731,218,123  ┤││      ││    │ │╭╮  ╭╮││╭╮ │ ╰╯  │    ││││     │ │ ││││         ╭╯│ ╭╮ │ │
+726,008,909  ┼╯│      ││╭╮ ╭╯ │││  ││││││ │     │    ││││     │ │ ││││ ╭─╮     │ ╰╮││╭╯ │
+720,799,695  ┤ │╭╮ ╭╮ ││││ │  ╰╯│  ││││││ │     │    ││││╭╮ ╭╮│ ╰╮││││ │ │     │  ╰╯││  │
+715,590,482  ┤ │││╭╯│╭╯│││╭╯    ╰╮ │││╰╯╰─╯     ╰╮ ╭╮│╰╯│││╭╯╰╯  │││││╭╯ │╭────╯    ╰╯  ╰───╴
+710,381,268  ┤ ││││ ││ ││╰╯      ╰─╯╰╯           │╭╯││  ││╰╯     ││││╰╯  ╰╯
+705,172,054  ┤ ╰╯╰╯ ││ ╰╯                        ╰╯ ╰╯  ││       ╰╯╰╯
+699,962,840  ┤      ╰╯                                  ╰╯
+           2026-07-23T09:55:36+00:00  2026-07-23T10:25:36+00:00   2026-07-23T10:55:36+00:00
 ```
 
-The y-axis precision adapts to both the magnitude and the spread of the
-data, so tightly-clustered metrics still show variation.
+The legend's min / avg / max / last often answers the question without
+another call, and the y-axis precision adapts to both the magnitude and
+the spread of the data, so tightly-clustered metrics still show
+variation.
+
+Absent data stays absent: stretches with no samples render as blank
+space instead of an interpolated line, and the legend reports what
+fraction of the window had no data — so an outage looks like an outage,
+not a smooth ramp between the samples on either side.
 
 `max_series` (default 5) refuses to draw if too many series come back
-— an over-plotted chart isn't useful. The tool returns the list of
-labels and a hint to narrow with `topk(...)` or label selectors.
+— an over-plotted chart isn't useful. Instead of a series dump, the
+refusal summarizes label cardinalities (e.g. `instance: 5, mode: 8`)
+with a few example series, so the next call can aggregate with
+`sum by (...)`, filter with label selectors, or wrap in `topk(...)`.
 
 ## Configure your MCP client
 

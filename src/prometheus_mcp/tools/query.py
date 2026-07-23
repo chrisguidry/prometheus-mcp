@@ -62,11 +62,25 @@ StepArgument = Annotated[
         default=None,
         description=(
             "Sample step as a duration ('15s', '1m', '1h30m') or numeric "
-            "seconds. When omitted, picks a step targeting ~360 samples with a "
+            "seconds. When omitted, picks a step targeting ~100 samples with a "
             "15s floor."
         ),
     ),
 ]
+
+_QUERY_RANGE_TARGET_SAMPLES = 100
+
+_EMPTY_INSTANT_HINT = (
+    "No series matched at this instant. The metric may not exist, the "
+    "selectors may not match, or there may be no samples within the "
+    "lookback window (default 5m) at this time — `chart_range` over a "
+    "wider window shows when data exists."
+)
+_EMPTY_RANGE_HINT = (
+    "No series matched in this window. The metric may not exist, the "
+    "selectors may not match, or there may be no samples in this time "
+    "range — `chart_range` over a wider window shows when data exists."
+)
 TimeoutArgument = Annotated[
     str | None,
     Field(
@@ -99,9 +113,17 @@ async def query(
 ) -> dict[str, Any]:
     """Run an instant PromQL query at a single point in time.
 
+    Good for current values and set-style questions: what targets are up,
+    top-k by current value, how many series match. For any question about
+    how a metric behaves *over time*, start with ``chart_range`` instead —
+    it shows the shape of the data at a fraction of the size of raw
+    samples.
+
     Returns Prometheus's native ``{resultType, result}`` shape, plus a
     ``total_series`` count and series-level paging for vector results.
-    Scalar and string results pass through unchanged.
+    Scalar and string results pass through unchanged. An empty result
+    carries a ``hint``: the metric may not exist, or it may simply have no
+    samples within the lookback window at that instant.
     """
     resolved_time = parse_time(time)
     timeout_delta = parse_step(timeout) if timeout is not None else None
@@ -116,7 +138,7 @@ async def query(
         limit=series_limit,
         offset=series_offset,
     )
-    return {
+    response = {
         "server": server,
         "resultType": result_type,
         "total_series": total,
@@ -125,6 +147,9 @@ async def query(
         "result": paged,
         "resolved": {"time": resolved_time.isoformat()},
     }
+    if result_type == "vector" and total == 0:
+        response["hint"] = _EMPTY_INSTANT_HINT
+    return response
 
 
 @mcp.tool(annotations={"title": "Range PromQL query", **_READ_ONLY})
@@ -138,14 +163,23 @@ async def query_range(
     series_limit: Limit = 50,
     series_offset: Offset = 0,
 ) -> dict[str, Any]:
-    """Run a range PromQL query over a time window.
+    """Run a range PromQL query and return the raw samples.
+
+    This is the zoom-in tool. Results are big — every series times every
+    step, often tens of thousands of tokens. For a first look at how a
+    metric behaves over time, use ``chart_range`` instead; come back here
+    with a narrow window or a tightly aggregated expression when you need
+    the exact values.
 
     Returns the matrix result with series-level paging. Each series's
     samples pass through untouched — paging trims series count, not the
     points within a series. The ``resolved`` block reports the actual
-    start / end / step the server saw.
+    start / end / step the server saw. An empty result carries a ``hint``
+    about why it might be empty.
     """
-    start_dt, end_dt, step_dt = parse_range(start, end, step)
+    start_dt, end_dt, step_dt = parse_range(
+        start, end, step, target_samples=_QUERY_RANGE_TARGET_SAMPLES
+    )
     timeout_delta = parse_step(timeout) if timeout is not None else None
     client = get_client(server, server_module.SERVERS)
     payload = await client.query_range(
@@ -164,7 +198,7 @@ async def query_range(
         limit=series_limit,
         offset=series_offset,
     )
-    return {
+    response = {
         "server": server,
         "resultType": result_type,
         "total_series": total,
@@ -177,3 +211,6 @@ async def query_range(
             "step": format_duration_human(step_dt),
         },
     }
+    if result_type == "matrix" and total == 0:
+        response["hint"] = _EMPTY_RANGE_HINT
+    return response

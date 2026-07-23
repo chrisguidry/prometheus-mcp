@@ -26,7 +26,28 @@ async def lifespan(_: FastMCP[None]) -> AsyncIterator[None]:
         await aclose_clients()
 
 
-mcp: FastMCP[None] = FastMCP("prometheus-mcp", lifespan=lifespan)
+INSTRUCTIONS = """\
+Tools for exploring the metrics in one or more Prometheus servers.
+
+The intended workflow:
+
+1. Discover: `list_servers` names the configured servers; `list_metrics`,
+   `list_labels`, `label_values`, `list_series`, and `metric_metadata`
+   map what a server contains.
+2. Look at the shape: `chart_range` is the first tool to reach for on any
+   question about a metric over time. It renders a range query as an
+   ASCII chart with per-series min / avg / max / last — a few hundred
+   tokens instead of the tens of thousands that raw samples cost.
+3. Zoom in: `query` and `query_range` return exact values. Use them on
+   narrow windows or aggregated expressions once a chart has shown where
+   to look.
+"""
+
+mcp: FastMCP[None] = FastMCP(
+    "prometheus-mcp",
+    instructions=INSTRUCTIONS,
+    lifespan=lifespan,
+)
 
 
 from prometheus_mcp import tools  # noqa: E402, F401  -- imported for side effects

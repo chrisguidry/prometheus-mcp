@@ -5,6 +5,8 @@ from typing import AsyncIterator, Iterator
 import httpx
 import pytest
 import respx
+from fastmcp.tools import ToolResult
+from mcp.types import TextContent
 
 from prometheus_mcp import server as server_module
 from prometheus_mcp.config import ServerConfig
@@ -40,6 +42,13 @@ def _matrix_payload(series: object) -> dict[str, object]:
     }
 
 
+def _text(result: ToolResult) -> str:
+    assert result.structured_content is None
+    return "\n".join(
+        block.text for block in result.content if isinstance(block, TextContent)
+    )
+
+
 async def test_chart_range_renders_matrix(
     servers: dict[str, ServerConfig], mock_router: respx.Router
 ) -> None:
@@ -60,9 +69,10 @@ async def test_chart_range_renders_matrix(
         start="2026-05-13T11:00:00Z",
         end="2026-05-13T12:00:00Z",
     )
-    assert 'up{job="api"}' in result["chart"]
-    assert result["series"] == ['up{job="api"}']
-    assert result["resolved"]["start"] == "2026-05-13T11:00:00+00:00"
+    text = _text(result)
+    assert text.splitlines()[0] == "up"
+    assert 'up{job="api"}' in text
+    assert "2026-05-13T11:00:00+00:00" in text
 
 
 async def test_chart_range_handles_empty_result(
@@ -77,8 +87,10 @@ async def test_chart_range_handles_empty_result(
         start="2026-05-13T11:00:00Z",
         end="2026-05-13T12:00:00Z",
     )
-    assert result["chart"] == "(no data)"
-    assert result["series"] == []
+    text = _text(result)
+    assert text.startswith("(no data)")
+    assert "2026-05-13T11:00:00+00:00" in text
+    assert "wider window" in text
 
 
 async def test_chart_range_rejects_non_matrix(
@@ -99,15 +111,19 @@ async def test_chart_range_rejects_non_matrix(
         start="2026-05-13T11:00:00Z",
         end="2026-05-13T12:00:00Z",
     )
-    assert "expects a matrix result" in result["error"]
+    assert "expects a matrix result" in _text(result)
 
 
-async def test_chart_range_too_many_series_returns_hint(
+async def test_chart_range_too_many_series_summarizes_labels(
     servers: dict[str, ServerConfig], mock_router: respx.Router
 ) -> None:
     series = [
         {
-            "metric": {"__name__": "up", "instance": f"host{i}:8080"},
+            "metric": {
+                "__name__": "up",
+                "instance": f"host{i}:8080",
+                "mode": ["user", "system"][i % 2],
+            },
             "values": [[1_780_000_000, "1"]],
         }
         for i in range(10)
@@ -122,10 +138,36 @@ async def test_chart_range_too_many_series_returns_hint(
         end="2026-05-13T12:00:00Z",
         max_series=3,
     )
-    assert result["too_many_series"] is True
-    assert result["total_series"] == 10
-    assert len(result["series"]) == 10
-    assert "topk" in result["hint"]
+    text = _text(result)
+    assert "10 series" in text
+    assert "__name__: 1" in text
+    assert "mode: 2" in text
+    assert "instance: 10" in text
+    assert 'up{instance="host2:8080", mode="user"}' in text
+    assert "sum by" in text
+    assert "topk(3" in text
+
+
+async def test_chart_range_marks_missing_samples_as_gaps(
+    servers: dict[str, ServerConfig], mock_router: respx.Router
+) -> None:
+    base = 1_778_407_200  # 2026-05-13T11:00:00Z
+    values: list[list[object]] = [[base + i * 15, "1.0"] for i in range(40)]
+    values.extend([base + 3_000 + i * 15, "2.0"] for i in range(40))
+    mock_router.get("https://prom.example/api/v1/query_range").mock(
+        return_value=httpx.Response(
+            200,
+            json=_matrix_payload([{"metric": {"__name__": "x"}, "values": values}]),
+        )
+    )
+    result = await chart_range(
+        server="prefect",
+        expr="x",
+        start="2026-05-13T11:00:00Z",
+        end="2026-05-13T12:00:00Z",
+        step="15s",
+    )
+    assert "no data" in _text(result).splitlines()[1]
 
 
 async def test_chart_range_skips_nan_values(
@@ -148,7 +190,7 @@ async def test_chart_range_skips_nan_values(
         start="2026-05-13T11:00:00Z",
         end="2026-05-13T12:00:00Z",
     )
-    assert "x" in result["chart"]
+    assert "x" in _text(result)
 
 
 async def test_chart_range_skips_non_numeric_values(
@@ -167,4 +209,4 @@ async def test_chart_range_skips_non_numeric_values(
         start="2026-05-13T11:00:00Z",
         end="2026-05-13T12:00:00Z",
     )
-    assert "(no data)" not in result["chart"]
+    assert "(no data)" not in _text(result)
