@@ -4,12 +4,13 @@ Pure rendering — no Prometheus or MCP imports — so the renderer can be
 exercised with hand-built data in tests. The tool layer adapts a range
 query response into ``ChartSeries`` and calls :func:`render_chart`.
 
-Multiple series are stacked into one chart with a numbered legend. Each
-legend line reports min / avg / max / last for its series, plus how much
-of the window had no data when gap detection is on. The y-axis labels
-come from ``asciichartpy``'s auto-scaling, and a short caption below the
-chart shows ``start``, midpoint, and ``end`` timestamps so a reader has
-anchors for the x-axis.
+Multiple series render as stacked per-series panels that share an
+x-axis, each autoscaled to its own value range (an ``overlay`` mode
+draws them into one shared plot instead). Each series' header line
+reports min / avg / max / last, plus how much of the window had no data
+when gap detection is on. The y-axis labels come from ``asciichartpy``'s
+auto-scaling, and a short caption below the chart shows ``start``,
+midpoint, and ``end`` timestamps so a reader has anchors for the x-axis.
 """
 
 from __future__ import annotations
@@ -61,8 +62,14 @@ def render_chart(
     height: int = 18,
     title: str | None = None,
     max_gap_seconds: float | None = None,
+    overlay: bool = False,
 ) -> str:
-    """Render one or more series as a single ASCII chart with a caption.
+    """Render one or more series as an ASCII chart with a caption.
+
+    Multiple series render as stacked per-series panels, each autoscaled
+    to its own range so every series keeps its shape and its identity;
+    ``height`` is the total plot-row budget split across the panels. Pass
+    ``overlay=True`` to draw every series into one shared plot instead.
 
     When ``max_gap_seconds`` is set, stretches between consecutive samples
     further apart than that render as blank space instead of an
@@ -82,23 +89,37 @@ def render_chart(
         )
         for s in series
     ]
-    config: dict[str, Any] = {
-        "height": height,
-        "format": _label_format_string(resampled),
-    }
-    plot_input: Any = resampled[0] if len(resampled) == 1 else resampled
-    chart_str: str = asciichartpy.plot(plot_input, config)
-
     column_seconds = (end - start).total_seconds() / max(1, width - 1)
     edge_tolerance = (
         math.ceil(max_gap_seconds / column_seconds) if max_gap_seconds else 0
+    )
+    legends = _legend(
+        series, resampled, edge_tolerance, numbered=overlay and len(series) > 1
     )
 
     parts: list[str] = []
     if title:
         parts.append(title)
-    parts.extend(_legend(series, resampled, edge_tolerance))
-    parts.append(chart_str)
+    if len(series) == 1 or overlay:
+        config: dict[str, Any] = {
+            "height": height,
+            "format": _label_format_string(resampled),
+        }
+        plot_input: Any = resampled[0] if len(resampled) == 1 else resampled
+        has_data = any(
+            not math.isnan(value) for columns in resampled for value in columns
+        )
+        parts.extend(legends)
+        parts.append(asciichartpy.plot(plot_input, config) if has_data else "")
+    else:
+        panel_height = max(4, height // len(series))
+        for legend_line, columns in zip(legends, resampled):
+            config = {
+                "height": panel_height,
+                "format": _label_format_string([columns]),
+            }
+            parts.append(legend_line)
+            parts.append(asciichartpy.plot(columns, config))
     parts.append(_render_x_caption(start, end, width))
     return "\n".join(parts)
 
@@ -107,11 +128,12 @@ def _legend(
     series: list[ChartSeries],
     resampled: list[list[float]],
     edge_tolerance: int,
+    *,
+    numbered: bool,
 ) -> list[str]:
     stats = [_series_stats(s.points) for s in series]
     finite = [value for stat in stats if stat is not None for value in stat]
     precision = _label_precision(finite)
-    numbered = len(series) > 1
     lines: list[str] = []
     for index, (entry, stat, columns) in enumerate(zip(series, stats, resampled)):
         prefix = f"[{index + 1}] " if numbered else ""

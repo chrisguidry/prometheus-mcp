@@ -35,7 +35,22 @@ ChartHeight = Annotated[
     Field(
         ge=6,
         le=60,
-        description="Chart height in rows. Default 18 is a comfortable read.",
+        description=(
+            "Chart height in rows. Default 18 is a comfortable read. With "
+            "multiple series this is the total budget, split across the "
+            "per-series panels."
+        ),
+    ),
+]
+Overlay = Annotated[
+    bool,
+    Field(
+        description=(
+            "Draw every series into one shared plot instead of stacked "
+            "per-series panels. The panels are the default because each "
+            "series stays attributable; overlay only when comparing exact "
+            "crossing points matters more than identity."
+        ),
     ),
 ]
 MaxSeries = Annotated[
@@ -122,6 +137,7 @@ async def chart_range(
     width: ChartWidth = 80,
     height: ChartHeight = 18,
     max_series: MaxSeries = 5,
+    overlay: Overlay = False,
 ) -> ToolResult:
     """Run a range query and render it as an ASCII chart — the recommended
     first step for any question about how a metric behaves over time.
@@ -133,6 +149,11 @@ async def chart_range(
     window as raw samples at many times the size — reach for it only when
     you need exact values, and narrow the window first using what the
     chart shows.
+
+    Multiple series render as stacked per-series panels on a shared
+    x-axis, each autoscaled so its shape stays visible; the legend stats
+    carry the cross-series magnitude comparison. Pass ``overlay=true``
+    for one shared plot instead.
 
     Missing data renders as blank space, and the legend notes what
     fraction of the window had no samples.
@@ -196,5 +217,6 @@ async def chart_range(
         height=height,
         title=expr,
         max_gap_seconds=step_dt.total_seconds() * _GAP_STEPS,
+        overlay=overlay,
     )
     return ToolResult(content=chart_string)

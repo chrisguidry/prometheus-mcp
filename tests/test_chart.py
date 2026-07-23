@@ -73,13 +73,56 @@ def test_render_chart_single_series_returns_text(
     assert "┤" in chart or "┼" in chart
 
 
-def test_render_chart_multi_series_has_numbered_legend(
+def test_render_chart_multi_series_renders_panels(
     window: tuple[datetime, datetime],
 ) -> None:
     start, end = window
     one = ChartSeries(label="a", points=_ramp_points(start, 30))
     two = ChartSeries(label="b", points=_ramp_points(start, 30, reverse=True))
     chart = render_chart([one, two], start=start, end=end, width=40, height=8)
+    lines = chart.splitlines()
+    assert lines[0].startswith("a — ")
+    header_b = next(i for i, line in enumerate(lines) if line.startswith("b — "))
+    assert any("┤" in line for line in lines[1:header_b])
+    assert any("┤" in line for line in lines[header_b + 1 :])
+    assert "[1]" not in chart
+    assert chart.count(start.isoformat(timespec="seconds")) == 1
+
+
+def test_render_chart_panels_autoscale_independently(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    small = ChartSeries(label="small", points=_ramp_points(start, 30))
+    values: list[float | None] = [1_000.0] * 30
+    big = ChartSeries(label="big", points=_evenly_sampled(start, 30, values))
+    chart = render_chart([small, big], start=start, end=end, width=40, height=12)
+    assert "29.00" in chart
+    assert "1,000" in chart
+
+
+def test_render_chart_overlay_of_all_empty_series(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    one = ChartSeries(label="a", points=_evenly_sampled(start, 5, [None] * 5))
+    two = ChartSeries(label="b", points=_evenly_sampled(start, 5, [None] * 5))
+    chart = render_chart(
+        [one, two], start=start, end=end, width=40, height=8, overlay=True
+    )
+    assert "[1] a — no data" in chart
+    assert "[2] b — no data" in chart
+
+
+def test_render_chart_overlay_keeps_numbered_legend(
+    window: tuple[datetime, datetime],
+) -> None:
+    start, end = window
+    one = ChartSeries(label="a", points=_ramp_points(start, 30))
+    two = ChartSeries(label="b", points=_ramp_points(start, 30, reverse=True))
+    chart = render_chart(
+        [one, two], start=start, end=end, width=40, height=8, overlay=True
+    )
     assert "[1] a" in chart
     assert "[2] b" in chart
 
@@ -111,7 +154,7 @@ def test_render_chart_legend_includes_series_stats(
     assert "last 29.00" in legend
 
 
-def test_render_chart_multi_series_legend_stats(
+def test_render_chart_panel_headers_include_stats(
     window: tuple[datetime, datetime],
 ) -> None:
     start, end = window
@@ -119,10 +162,9 @@ def test_render_chart_multi_series_legend_stats(
     two = ChartSeries(label="b", points=_ramp_points(start, 30, reverse=True))
     chart = render_chart([one, two], start=start, end=end, width=40, height=8)
     lines = chart.splitlines()
-    assert lines[0].startswith("[1] a")
     assert "last 29.00" in lines[0]
-    assert lines[1].startswith("[2] b")
-    assert "last 0.00" in lines[1]
+    header_b = next(line for line in lines if line.startswith("b — "))
+    assert "last 0.00" in header_b
 
 
 def test_render_chart_handles_all_none_values(

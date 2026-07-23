@@ -148,10 +148,56 @@ async def test_chart_range_too_many_series_summarizes_labels(
     assert "topk(3" in text
 
 
+def _two_series_payload() -> dict[str, object]:
+    values: list[list[object]] = [[1_778_670_000 + i * 15, "1.0"] for i in range(240)]
+    return _matrix_payload(
+        [
+            {"metric": {"__name__": "up", "job": "api"}, "values": values},
+            {"metric": {"__name__": "up", "job": "web"}, "values": values},
+        ]
+    )
+
+
+async def test_chart_range_multi_series_renders_panels(
+    servers: dict[str, ServerConfig], mock_router: respx.Router
+) -> None:
+    mock_router.get("https://prom.example/api/v1/query_range").mock(
+        return_value=httpx.Response(200, json=_two_series_payload())
+    )
+    result = await chart_range(
+        server="prefect",
+        expr="up",
+        start="2026-05-13T11:00:00Z",
+        end="2026-05-13T12:00:00Z",
+    )
+    text = _text(result)
+    assert 'up{job="api"} — ' in text
+    assert 'up{job="web"} — ' in text
+    assert "[1]" not in text
+
+
+async def test_chart_range_overlay_flag_draws_one_plot(
+    servers: dict[str, ServerConfig], mock_router: respx.Router
+) -> None:
+    mock_router.get("https://prom.example/api/v1/query_range").mock(
+        return_value=httpx.Response(200, json=_two_series_payload())
+    )
+    result = await chart_range(
+        server="prefect",
+        expr="up",
+        start="2026-05-13T11:00:00Z",
+        end="2026-05-13T12:00:00Z",
+        overlay=True,
+    )
+    text = _text(result)
+    assert '[1] up{job="api"}' in text
+    assert '[2] up{job="web"}' in text
+
+
 async def test_chart_range_marks_missing_samples_as_gaps(
     servers: dict[str, ServerConfig], mock_router: respx.Router
 ) -> None:
-    base = 1_778_407_200  # 2026-05-13T11:00:00Z
+    base = 1_778_670_000  # 2026-05-13T11:00:00Z
     values: list[list[object]] = [[base + i * 15, "1.0"] for i in range(40)]
     values.extend([base + 3_000 + i * 15, "2.0"] for i in range(40))
     mock_router.get("https://prom.example/api/v1/query_range").mock(
@@ -167,7 +213,9 @@ async def test_chart_range_marks_missing_samples_as_gaps(
         end="2026-05-13T12:00:00Z",
         step="15s",
     )
-    assert "no data" in _text(result).splitlines()[1]
+    legend = _text(result).splitlines()[1]
+    assert "min 1.00" in legend
+    assert "no data 6" in legend
 
 
 async def test_chart_range_skips_nan_values(
