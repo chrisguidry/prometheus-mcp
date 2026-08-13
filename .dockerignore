@@ -1,0 +1,10 @@
+.github
+.venv
+__pycache__
+*.pyc
+htmlcov
+.coverage
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.loq_cache
