@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "asciichartpy>=1.5.25",
-    "fastmcp>=3.2.4",
+    "fastmcp>=4.1.3",
     "httpx>=0.28.0",
 ]
 
