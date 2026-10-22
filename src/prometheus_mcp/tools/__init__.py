@@ -1,8 +1,5 @@
 """MCP tool implementations for prometheus-mcp.
 
-Importing this package registers every tool on ``prometheus_mcp.server.mcp``.
+Each module exports its tools as ``TOOLS``, and ``prometheus_mcp.server``
+registers them.
 """
-
-from prometheus_mcp.tools import admin, chart, discovery, query
-
-__all__ = ["admin", "chart", "discovery", "query"]

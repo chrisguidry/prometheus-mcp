@@ -1,36 +1,40 @@
-"""Admin / introspection tools — useful for an agent figuring out where it is."""
+"""Admin and introspection tools, for an agent finding out where it is."""
 
 from __future__ import annotations
 
-from typing import Annotated
+from collections.abc import Callable
 
-from pydantic import Field
+from fastmcp.dependencies import Shared
+from fastmcp.tools import tool
+from pydantic import BaseModel, Field
 
-from prometheus_mcp import server as server_module
-from prometheus_mcp.server import mcp
+from prometheus_mcp.prometheus import PrometheusServers, prometheus_servers
+from prometheus_mcp.tools.effects import READ, READS
 
 
-@mcp.tool(
-    annotations={
-        "title": "List Prometheus servers",
-        "readOnlyHint": True,
-        "idempotentHint": True,
-    }
-)
-async def list_servers() -> Annotated[
-    list[dict[str, str]],
-    Field(
-        description=(
-            "Every Prometheus backend this MCP server is configured to talk to."
-        )
-    ),
-]:
+class PrometheusServer(BaseModel):
+    """One Prometheus server this MCP server can query."""
+
+    slug: str = Field(description="The value to pass as `server` to other tools.")
+    url: str = Field(
+        description="The Prometheus base URL, without any user name or password."
+    )
+
+
+@tool(title="List Prometheus servers", tags={"servers", READ}, annotations=READS)
+async def list_servers(
+    servers: PrometheusServers = Shared(prometheus_servers),
+) -> list[PrometheusServer]:
     """List the Prometheus servers available to this MCP server.
 
     Each entry has a ``slug`` (the value to pass as ``server`` on every other
-    tool) and a ``url`` (the Prometheus base URL). Authentication headers are
-    not returned.
+    tool) and a ``url`` (the Prometheus base URL). Authentication headers and
+    credentials in the URL are not returned.
     """
     return [
-        {"slug": cfg.slug, "url": cfg.url} for cfg in server_module.SERVERS.values()
+        PrometheusServer(slug=config.slug, url=config.public_url)
+        for config in servers.configs.values()
     ]
+
+
+TOOLS: list[Callable[..., object]] = [list_servers]

@@ -105,3 +105,20 @@ def test_load_servers_defaults_to_os_environ(
     monkeypatch.setenv("PROMETHEUS_MCP_ENVTEST_URL", "http://envtest/")
     servers = load_servers()
     assert servers["envtest"].url == "http://envtest/"
+
+
+def test_unknown_server_message_is_not_quoted() -> None:
+    error = UnknownServerError("dev", ["prod"])
+    assert str(error) == "unknown Prometheus server 'dev' (available: prod)"
+
+
+@pytest.mark.parametrize(
+    ("url", "public_url"),
+    [
+        ("https://prom.example/", "https://prom.example/"),
+        ("https://user:hunter2@prom.example:9090/", "https://prom.example:9090/"),
+        ("https://user@prom.example/prometheus", "https://prom.example/prometheus"),
+    ],
+)
+def test_public_url_drops_credentials(url: str, public_url: str) -> None:
+    assert ServerConfig(slug="prod", url=url).public_url == public_url

@@ -5,28 +5,34 @@ A thin wrapper around ``httpx.AsyncClient`` that knows how to talk to
 handful of GETs the MCP tools need (``labels``, ``label/<name>/values``,
 ``series``, ``metadata``, ``query``, ``query_range``).
 
-Higher-level concerns — paging, time-range parsing, chart rendering —
-live in other modules. This module deals only in already-resolved
-``datetime`` / ``timedelta`` values.
+Higher-level concerns, such as paging, time-range parsing, and chart
+rendering, live in other modules. This module deals only in
+already-resolved ``datetime`` / ``timedelta`` values.
+
+Error messages name the server by its slug and the API path, never by its
+URL, because the URL can hold a user name and password.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Any, Mapping, Sequence, cast
+from typing import Any, Self, cast
+from urllib.parse import quote
 
 import httpx
 from httpx._types import QueryParamTypes
 
-from prometheus_mcp.config import ServerConfig, get_server
+from prometheus_mcp.config import ServerConfig, get_server, load_servers
 
 __all__ = [
     "PrometheusAPIError",
     "PrometheusClient",
     "PrometheusError",
+    "PrometheusServers",
     "PrometheusTransportError",
-    "aclose_clients",
-    "get_client",
+    "prometheus_servers",
 ]
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -42,7 +48,7 @@ class PrometheusAPIError(PrometheusError):
     def __init__(self, error_type: str, error: str) -> None:
         self.error_type = error_type
         self.error = error
-        super().__init__(f"{error_type}: {error}")
+        super().__init__(f"Prometheus returned {error_type}: {error}")
 
 
 class PrometheusTransportError(PrometheusError):
@@ -64,6 +70,7 @@ class PrometheusClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         base_url = config.url.rstrip("/") + "/api/v1/"
+        self.timeout = timeout
         self._client = httpx.AsyncClient(
             base_url=base_url,
             headers=dict(config.headers),
@@ -72,7 +79,7 @@ class PrometheusClient:
         )
         self.config = config
 
-    async def __aenter__(self) -> "PrometheusClient":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -86,20 +93,32 @@ class PrometheusClient:
         path: str,
         *,
         params: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
+        timeout: float | None = None,
     ) -> Any:
+        """GET ``path`` and return the ``data`` of a successful response.
+
+        ``timeout`` is in seconds and replaces the client's timeout for this
+        request.
+        """
+        server = f"Prometheus server {self.config.slug!r}"
+        seconds = self.timeout if timeout is None else timeout
         try:
             response = await self._client.get(
-                path, params=cast(QueryParamTypes | None, params)
+                path, params=cast(QueryParamTypes | None, params), timeout=seconds
             )
+        except httpx.TimeoutException as exc:
+            raise PrometheusTransportError(
+                f"{server} did not answer {path} within {seconds:g} seconds"
+            ) from exc
         except httpx.HTTPError as exc:
             raise PrometheusTransportError(
-                f"request to {path!r} failed: {exc}"
+                f"request to {server} for {path} failed: {exc}"
             ) from exc
 
         if response.status_code >= 400:
             detail = _try_extract_error_detail(response)
             raise PrometheusTransportError(
-                f"{response.request.url} returned HTTP {response.status_code}{detail}",
+                f"{server} answered {path} with HTTP {response.status_code}{detail}",
                 status_code=response.status_code,
             )
 
@@ -107,12 +126,13 @@ class PrometheusClient:
             raw = response.json()
         except ValueError as exc:
             raise PrometheusTransportError(
-                f"{response.request.url} returned non-JSON body"
+                f"{server} returned a non-JSON body for {path}"
             ) from exc
 
         if not isinstance(raw, dict):
             raise PrometheusTransportError(
-                f"{response.request.url} returned a {type(raw).__name__}, expected an object"
+                f"{server} returned a {type(raw).__name__} for {path}, "
+                "expected an object"
             )
 
         payload = cast(dict[str, Any], raw)
@@ -125,7 +145,7 @@ class PrometheusClient:
                 str(payload.get("error", "")),
             )
         raise PrometheusTransportError(
-            f"{response.request.url} returned unexpected status {status!r}"
+            f"{server} returned unexpected status {status!r} for {path}"
         )
 
     async def labels(
@@ -150,8 +170,9 @@ class PrometheusClient:
         limit: int | None = None,
     ) -> list[str]:
         params = _build_params(start=start, end=end, match=match, limit=limit)
+        # Quote the name so that a "/" or ".." in it cannot reach another path.
         data: list[str] | None = await self.request(
-            f"label/{name}/values", params=params
+            f"label/{quote(name, safe='')}/values", params=params
         )
         return data or []
 
@@ -195,7 +216,9 @@ class PrometheusClient:
             params.append(("time", _format_time(time)))
         if timeout is not None:
             params.append(("timeout", _format_duration(timeout)))
-        return await self.request("query", params=params)
+        return await self.request(
+            "query", params=params, timeout=self._query_wait(timeout)
+        )
 
     async def query_range(
         self,
@@ -214,7 +237,19 @@ class PrometheusClient:
         ]
         if timeout is not None:
             params.append(("timeout", _format_duration(timeout)))
-        return await self.request("query_range", params=params)
+        return await self.request(
+            "query_range", params=params, timeout=self._query_wait(timeout)
+        )
+
+    def _query_wait(self, timeout: timedelta | None) -> float | None:
+        """How long to wait for a query that Prometheus may run for ``timeout``.
+
+        Without this, the client's own timeout would end a long query before
+        Prometheus does, and the caller would never see Prometheus's answer.
+        """
+        if timeout is None:
+            return None
+        return self.timeout + timeout.total_seconds()
 
 
 def _try_extract_error_detail(response: httpx.Response) -> str:
@@ -271,27 +306,43 @@ def _format_duration(value: timedelta) -> str:
     seconds = value.total_seconds()
     if seconds.is_integer():
         return f"{int(seconds)}s"
-    return f"{int(round(seconds * 1_000))}ms"
+    return f"{round(seconds * 1_000)}ms"
 
 
-_clients: dict[str, PrometheusClient] = {}
+class PrometheusServers:
+    """The configured Prometheus servers, with one client for each server in use."""
+
+    def __init__(self, configs: Mapping[str, ServerConfig]) -> None:
+        self.configs = configs
+        self._clients: dict[str, PrometheusClient] = {}
+
+    def client(self, slug: str) -> PrometheusClient:
+        """Return the client for ``slug``, and open it on first use.
+
+        Raises ``UnknownServerError`` when no server has that slug.
+        """
+        config = get_server(slug, self.configs)
+        client = self._clients.get(config.slug)
+        if client is None:
+            client = PrometheusClient(config)
+            self._clients[config.slug] = client
+        return client
+
+    async def aclose(self) -> None:
+        while self._clients:
+            _, client = self._clients.popitem()
+            await client.aclose()
 
 
-def get_client(
-    slug: str,
-    servers: Mapping[str, ServerConfig],
-) -> PrometheusClient:
-    """Return a cached ``PrometheusClient`` for ``slug``, creating it on demand."""
-    config = get_server(slug, servers)
-    client = _clients.get(config.slug)
-    if client is None:
-        client = PrometheusClient(config)
-        _clients[config.slug] = client
-    return client
+@asynccontextmanager
+async def prometheus_servers() -> AsyncGenerator[PrometheusServers]:
+    """Open the servers configured in the environment, and close their clients.
 
-
-async def aclose_clients() -> None:
-    """Close every cached client. Bind to FastMCP shutdown."""
-    while _clients:
-        _, client = _clients.popitem()
-        await client.aclose()
+    Tools receive this through FastMCP's ``Shared`` dependency, so the MCP
+    server keeps one connection pool per Prometheus server for its whole life.
+    """
+    servers = PrometheusServers(load_servers())
+    try:
+        yield servers
+    finally:
+        await servers.aclose()

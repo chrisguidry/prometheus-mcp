@@ -1,47 +1,43 @@
 from __future__ import annotations
 
 import pytest
+from fastmcp import Client
 
-from prometheus_mcp import server as server_module
-from prometheus_mcp.config import ServerConfig
-from prometheus_mcp.tools.admin import list_servers
+from prometheus_mcp.server import mcp
 
 
 @pytest.fixture
-def two_servers(monkeypatch: pytest.MonkeyPatch) -> dict[str, ServerConfig]:
-    servers = {
-        "prod": ServerConfig(
-            slug="prod",
-            url="https://prom-prod/",
-            headers={"Authorization": "Bearer secret"},
-        ),
-        "stg": ServerConfig(slug="stg", url="https://prom-stg/"),
+def two_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PROMETHEUS_MCP_SERVERS", "prod,stg")
+    monkeypatch.setenv("PROMETHEUS_MCP_PROD_URL", "https://prom-prod/")
+    monkeypatch.setenv("PROMETHEUS_MCP_PROD_HEADER_AUTHORIZATION", "Bearer secret")
+    monkeypatch.setenv("PROMETHEUS_MCP_STG_URL", "https://reader:hunter2@prom-stg/")
+
+
+async def test_list_servers_returns_slug_and_url(two_servers: None) -> None:
+    async with Client(mcp) as client:
+        result = await client.call_tool("list_servers", {})
+    assert result.structured_content == {
+        "result": [
+            {"slug": "prod", "url": "https://prom-prod/"},
+            {"slug": "stg", "url": "https://prom-stg/"},
+        ]
     }
-    monkeypatch.setattr(server_module, "SERVERS", servers)
-    return servers
 
 
-async def test_list_servers_returns_slug_and_url(
-    two_servers: dict[str, ServerConfig],
-) -> None:
-    result = await list_servers()
-    assert sorted(result, key=lambda r: r["slug"]) == [
-        {"slug": "prod", "url": "https://prom-prod/"},
-        {"slug": "stg", "url": "https://prom-stg/"},
-    ]
-
-
-async def test_list_servers_does_not_leak_headers(
-    two_servers: dict[str, ServerConfig],
-) -> None:
-    result = await list_servers()
-    flat = " ".join(f"{k}={v}" for entry in result for k, v in entry.items())
-    assert "secret" not in flat
-    assert "Authorization" not in flat
+async def test_list_servers_does_not_leak_credentials(two_servers: None) -> None:
+    async with Client(mcp) as client:
+        result = await client.call_tool("list_servers", {})
+    text = str(result.content) + str(result.structured_content)
+    assert "secret" not in text
+    assert "Authorization" not in text
+    assert "hunter2" not in text
 
 
 async def test_list_servers_empty_when_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(server_module, "SERVERS", {})
-    assert await list_servers() == []
+    monkeypatch.delenv("PROMETHEUS_MCP_SERVERS", raising=False)
+    async with Client(mcp) as client:
+        result = await client.call_tool("list_servers", {})
+    assert result.structured_content == {"result": []}

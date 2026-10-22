@@ -1,38 +1,25 @@
 from __future__ import annotations
 
-from typing import AsyncIterator, Iterator
+from typing import Any
 
 import httpx
-import pytest
 import respx
-from fastmcp.tools import ToolResult
+from fastmcp import Client
+from fastmcp.client import FastMCPTransport
+from fastmcp.client.client import CallToolResult
 from mcp.types import TextContent
 
-from prometheus_mcp import server as server_module
-from prometheus_mcp.config import ServerConfig
-from prometheus_mcp.prometheus import aclose_clients
-from prometheus_mcp.tools.chart import chart_range
 
-
-@pytest.fixture
-def servers(monkeypatch: pytest.MonkeyPatch) -> dict[str, ServerConfig]:
-    registry = {
-        "prefect": ServerConfig(slug="prefect", url="https://prom.example/"),
-    }
-    monkeypatch.setattr(server_module, "SERVERS", registry)
-    return registry
-
-
-@pytest.fixture
-def mock_router() -> Iterator[respx.Router]:
-    with respx.mock(assert_all_called=False) as router:
-        yield router
-
-
-@pytest.fixture(autouse=True)
-async def reset_clients() -> AsyncIterator[None]:
-    yield
-    await aclose_clients()
+async def chart(client: Client[FastMCPTransport], **arguments: Any) -> CallToolResult:
+    return await client.call_tool(
+        "chart_range",
+        {
+            "server": "prefect",
+            "start": "2026-05-13T11:00:00Z",
+            "end": "2026-05-13T12:00:00Z",
+            **arguments,
+        },
+    )
 
 
 def _matrix_payload(series: object) -> dict[str, object]:
@@ -42,7 +29,7 @@ def _matrix_payload(series: object) -> dict[str, object]:
     }
 
 
-def _text(result: ToolResult) -> str:
+def _text(result: CallToolResult) -> str:
     assert result.structured_content is None
     return "\n".join(
         block.text for block in result.content if isinstance(block, TextContent)
@@ -50,7 +37,7 @@ def _text(result: ToolResult) -> str:
 
 
 async def test_chart_range_renders_matrix(
-    servers: dict[str, ServerConfig], mock_router: respx.Router
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
     values: list[list[object]] = [
         [1_780_000_000 + i * 15, str(float(i % 5))] for i in range(40)
@@ -63,12 +50,7 @@ async def test_chart_range_renders_matrix(
             ),
         )
     )
-    result = await chart_range(
-        server="prefect",
-        expr="up",
-        start="2026-05-13T11:00:00Z",
-        end="2026-05-13T12:00:00Z",
-    )
+    result = await chart(mcp_client, expr="up")
     text = _text(result)
     assert text.splitlines()[0] == "up"
     assert 'up{job="api"}' in text
@@ -76,17 +58,12 @@ async def test_chart_range_renders_matrix(
 
 
 async def test_chart_range_handles_empty_result(
-    servers: dict[str, ServerConfig], mock_router: respx.Router
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
     mock_router.get("https://prom.example/api/v1/query_range").mock(
         return_value=httpx.Response(200, json=_matrix_payload([]))
     )
-    result = await chart_range(
-        server="prefect",
-        expr="up",
-        start="2026-05-13T11:00:00Z",
-        end="2026-05-13T12:00:00Z",
-    )
+    result = await chart(mcp_client, expr="up")
     text = _text(result)
     assert text.startswith("(no data)")
     assert "2026-05-13T11:00:00+00:00" in text
@@ -94,7 +71,7 @@ async def test_chart_range_handles_empty_result(
 
 
 async def test_chart_range_rejects_non_matrix(
-    servers: dict[str, ServerConfig], mock_router: respx.Router
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
     mock_router.get("https://prom.example/api/v1/query_range").mock(
         return_value=httpx.Response(
@@ -105,17 +82,12 @@ async def test_chart_range_rejects_non_matrix(
             },
         )
     )
-    result = await chart_range(
-        server="prefect",
-        expr="42",
-        start="2026-05-13T11:00:00Z",
-        end="2026-05-13T12:00:00Z",
-    )
+    result = await chart(mcp_client, expr="42")
     assert "expects a matrix result" in _text(result)
 
 
 async def test_chart_range_too_many_series_summarizes_labels(
-    servers: dict[str, ServerConfig], mock_router: respx.Router
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
     series = [
         {
@@ -131,13 +103,7 @@ async def test_chart_range_too_many_series_summarizes_labels(
     mock_router.get("https://prom.example/api/v1/query_range").mock(
         return_value=httpx.Response(200, json=_matrix_payload(series))
     )
-    result = await chart_range(
-        server="prefect",
-        expr="up",
-        start="2026-05-13T11:00:00Z",
-        end="2026-05-13T12:00:00Z",
-        max_series=3,
-    )
+    result = await chart(mcp_client, expr="up", max_series=3)
     text = _text(result)
     assert "10 series" in text
     assert "__name__: 1" in text
@@ -159,17 +125,12 @@ def _two_series_payload() -> dict[str, object]:
 
 
 async def test_chart_range_multi_series_renders_panels(
-    servers: dict[str, ServerConfig], mock_router: respx.Router
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
     mock_router.get("https://prom.example/api/v1/query_range").mock(
         return_value=httpx.Response(200, json=_two_series_payload())
     )
-    result = await chart_range(
-        server="prefect",
-        expr="up",
-        start="2026-05-13T11:00:00Z",
-        end="2026-05-13T12:00:00Z",
-    )
+    result = await chart(mcp_client, expr="up")
     text = _text(result)
     assert 'up{job="api"} — ' in text
     assert 'up{job="web"} — ' in text
@@ -177,25 +138,19 @@ async def test_chart_range_multi_series_renders_panels(
 
 
 async def test_chart_range_overlay_flag_draws_one_plot(
-    servers: dict[str, ServerConfig], mock_router: respx.Router
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
     mock_router.get("https://prom.example/api/v1/query_range").mock(
         return_value=httpx.Response(200, json=_two_series_payload())
     )
-    result = await chart_range(
-        server="prefect",
-        expr="up",
-        start="2026-05-13T11:00:00Z",
-        end="2026-05-13T12:00:00Z",
-        overlay=True,
-    )
+    result = await chart(mcp_client, expr="up", overlay=True)
     text = _text(result)
     assert '[1] up{job="api"}' in text
     assert '[2] up{job="web"}' in text
 
 
 async def test_chart_range_marks_missing_samples_as_gaps(
-    servers: dict[str, ServerConfig], mock_router: respx.Router
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
     base = 1_778_670_000  # 2026-05-13T11:00:00Z
     values: list[list[object]] = [[base + i * 15, "1.0"] for i in range(40)]
@@ -206,20 +161,14 @@ async def test_chart_range_marks_missing_samples_as_gaps(
             json=_matrix_payload([{"metric": {"__name__": "x"}, "values": values}]),
         )
     )
-    result = await chart_range(
-        server="prefect",
-        expr="x",
-        start="2026-05-13T11:00:00Z",
-        end="2026-05-13T12:00:00Z",
-        step="15s",
-    )
+    result = await chart(mcp_client, expr="x", step="15s")
     legend = _text(result).splitlines()[1]
     assert "min 1.00" in legend
     assert "no data 6" in legend
 
 
 async def test_chart_range_skips_nan_values(
-    servers: dict[str, ServerConfig], mock_router: respx.Router
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
     values: list[list[object]] = [
         [1_780_000_000, "NaN"],
@@ -232,17 +181,12 @@ async def test_chart_range_skips_nan_values(
             json=_matrix_payload([{"metric": {"__name__": "x"}, "values": values}]),
         )
     )
-    result = await chart_range(
-        server="prefect",
-        expr="x",
-        start="2026-05-13T11:00:00Z",
-        end="2026-05-13T12:00:00Z",
-    )
+    result = await chart(mcp_client, expr="x")
     assert "x" in _text(result)
 
 
 async def test_chart_range_skips_non_numeric_values(
-    servers: dict[str, ServerConfig], mock_router: respx.Router
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
     values: list[list[object]] = [[1_780_000_000, "not-a-number"]]
     mock_router.get("https://prom.example/api/v1/query_range").mock(
@@ -251,10 +195,15 @@ async def test_chart_range_skips_non_numeric_values(
             json=_matrix_payload([{"metric": {"__name__": "x"}, "values": values}]),
         )
     )
-    result = await chart_range(
-        server="prefect",
-        expr="x",
-        start="2026-05-13T11:00:00Z",
-        end="2026-05-13T12:00:00Z",
-    )
+    result = await chart(mcp_client, expr="x")
     assert "(no data)" not in _text(result)
+
+
+async def test_chart_range_passes_timeout(
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
+) -> None:
+    route = mock_router.get("https://prom.example/api/v1/query_range").mock(
+        return_value=httpx.Response(200, json=_matrix_payload([]))
+    )
+    await chart(mcp_client, expr="up", timeout="2m")
+    assert route.calls.last.request.url.params["timeout"] == "120s"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -12,35 +11,12 @@ from prometheus_mcp.prometheus import (
     PrometheusAPIError,
     PrometheusClient,
     PrometheusTransportError,
-    aclose_clients,
-    get_client,
 )
 
 
 @pytest.fixture
-def server() -> ServerConfig:
-    return ServerConfig(
-        slug="prefect",
-        url="https://prom.example/",
-        headers={"Authorization": "Bearer token", "X-Scope-Orgid": "tenant-7"},
-    )
-
-
-@pytest.fixture
 def now() -> datetime:
-    return datetime(2026, 5, 13, 12, 0, 0, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def mock_router() -> Iterator[respx.Router]:
-    with respx.mock(assert_all_called=False) as router:
-        yield router
-
-
-@pytest.fixture
-async def reset_client_cache() -> AsyncIterator[None]:
-    yield
-    await aclose_clients()
+    return datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 
 
 async def test_request_returns_data_for_success(
@@ -449,20 +425,33 @@ async def test_query_range_passes_all_args(
     assert sent.url.params["timeout"] == "5s"
 
 
-async def test_get_client_caches_per_slug(
-    server: ServerConfig, reset_client_cache: None
+async def test_label_values_quotes_the_label_name(
+    server: ServerConfig, mock_router: respx.Router
 ) -> None:
-    servers = {"prefect": server}
-    first = get_client("prefect", servers)
-    second = get_client("PREFECT", servers)
-    assert first is second
+    route = mock_router.get(
+        "https://prom.example/api/v1/label/..%2Fstatus%2Fconfig/values"
+    ).mock(return_value=httpx.Response(200, json={"status": "success", "data": []}))
+    async with PrometheusClient(server) as client:
+        await client.label_values("../status/config")
+    assert route.called
 
 
-async def test_aclose_clients_drops_cached_instances(
-    server: ServerConfig, reset_client_cache: None
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(503, text="upstream down"),
+        httpx.Response(200, content=b"<html></html>"),
+        httpx.Response(200, json=["not", "an", "object"]),
+        httpx.Response(200, json={"status": "weird"}),
+    ],
+)
+async def test_errors_never_include_the_url(
+    mock_router: respx.Router, response: httpx.Response
 ) -> None:
-    servers = {"prefect": server}
-    first = get_client("prefect", servers)
-    await aclose_clients()
-    second = get_client("prefect", servers)
-    assert first is not second
+    server = ServerConfig(slug="prefect", url="https://reader:hunter2@prom.example/")
+    mock_router.get("https://prom.example/api/v1/labels").mock(return_value=response)
+    async with PrometheusClient(server) as client:
+        with pytest.raises(PrometheusTransportError) as excinfo:
+            await client.labels()
+    assert "hunter2" not in str(excinfo.value)
+    assert "prom.example" not in str(excinfo.value)

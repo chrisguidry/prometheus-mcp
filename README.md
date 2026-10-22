@@ -38,6 +38,14 @@ Header names are SCREAMING_SNAKE_CASE in the env var and translate to
 `X_SCOPE_ORGID` → `X-Scope-Orgid`). Slugs can include `a-z`, `0-9`,
 `_`, and `-`; case-insensitive at the API surface.
 
+A URL can also hold a user name and password for basic authentication
+(`https://reader:secret@prom.example/`). Tools and error messages never
+show them, or any header value.
+
+The server reads this configuration when it starts, and refuses to start
+when the configuration is not valid. Every request to Prometheus has a
+30-second timeout.
+
 ## Run
 
 ```bash
@@ -49,8 +57,16 @@ Or as a module: `python -m prometheus_mcp`.
 
 ## Tools
 
-All tools take a `server` slug to select which backend to query. They
-are read-only and idempotent.
+All tools except `list_servers` take a `server` slug to select which
+backend to query. Every tool only reads, and the tools declare this in
+their MCP annotations (`readOnlyHint: true`, `openWorldHint: false`), so
+a client can run them without asking first. Each tool also carries a
+`read` tag and a tag for its domain.
+
+When Prometheus rejects a query, the tool error carries Prometheus's own
+message (for example, `parse error: unexpected end of input`), so an
+agent can fix its next call. Unexpected errors reach the client without
+their details.
 
 The tools are designed around a workflow that keeps an agent's context
 small: discover what a server contains, look at the *shape* of a metric
@@ -62,7 +78,7 @@ as MCP instructions so agents pick it up automatically.
 
 | Tool             | What it does                                                  |
 | ---------------- | ------------------------------------------------------------- |
-| `list_servers`   | List the configured slugs and their URLs (headers redacted).  |
+| `list_servers`   | List the configured slugs and their URLs (credentials hidden). |
 | `list_metrics`   | Enumerate metric names (`/api/v1/label/__name__/values`).     |
 | `list_labels`    | Enumerate label names.                                        |
 | `label_values`   | Values seen for a single label (optionally scoped by match).  |
@@ -71,7 +87,10 @@ as MCP instructions so agents pick it up automatically.
 
 All discovery tools accept `limit` and `offset` for paging on top of
 `total`, so an agent can walk through high-cardinality stores in
-chunks.
+chunks. `list_metrics`, `list_labels`, `label_values`, and `list_series`
+also accept `start` and `end` to search only one time window. Without
+them, Prometheus searches all the data it holds, which is slow on a
+large store.
 
 ### Query
 
@@ -87,11 +106,15 @@ magnitude). `query_range` picks a `step` that targets ~100 samples
 with a 15s floor when none is given, and returns a `resolved` block
 with the actual `start` / `end` / `step` the server saw.
 
+Both tools, and `chart_range`, accept a `timeout` (such as `"2m"`) that
+Prometheus applies to the query. The server then waits that long plus
+its usual 30 seconds for the answer.
+
 Vector and matrix results page by series (`series_limit` /
 `series_offset`); each series's samples pass through untouched. An
-empty result carries a `hint` explaining the likely reasons — the
-metric may not exist, or it may simply have no samples in that window —
-so an agent doesn't mistake an outage for a metric that never was.
+empty result carries a `hint` explaining the likely reasons: the
+metric may not exist, or it may simply have no samples in that window.
+An agent then doesn't mistake an outage for a metric that never was.
 
 ### Chart
 

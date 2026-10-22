@@ -1,53 +1,58 @@
 """The FastMCP application instance for prometheus-mcp.
 
-Loads the configured Prometheus servers from the environment, builds the
-``FastMCP`` app, and registers every tool by importing the ``tools``
-package for its side effects.
+Builds the ``FastMCP`` app from every domain's tools. The tools receive the
+configured Prometheus servers through FastMCP's ``Shared`` dependency.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastmcp import FastMCP
 
-from prometheus_mcp.config import ServerConfig, load_servers
-from prometheus_mcp.prometheus import aclose_clients
-
-SERVERS: dict[str, ServerConfig] = load_servers()
+from prometheus_mcp.config import load_servers
+from prometheus_mcp.errors import PrometheusErrorMiddleware
+from prometheus_mcp.tools import admin, chart, discovery, query
 
 
 @asynccontextmanager
-async def lifespan(_: FastMCP[None]) -> AsyncIterator[None]:
-    try:
-        yield
-    finally:
-        await aclose_clients()
+async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None]:
+    # Read the configuration at startup, so that a server with a bad
+    # configuration fails to start instead of failing every tool call.
+    load_servers()
+    yield
 
 
 INSTRUCTIONS = """\
-Tools for exploring the metrics in one or more Prometheus servers.
+Tools for exploring the metrics in one or more Prometheus servers. Every tool
+only reads.
+
+Every tool except `list_servers` takes `server`, the slug of one configured
+Prometheus server. `list_servers` names them.
 
 The intended workflow:
 
-1. Discover: `list_servers` names the configured servers; `list_metrics`,
-   `list_labels`, `label_values`, `list_series`, and `metric_metadata`
-   map what a server contains.
+1. Discover: `list_metrics`, `list_labels`, `label_values`, `list_series`,
+   and `metric_metadata` map what a server contains.
 2. Look at the shape: `chart_range` is the first tool to reach for on any
    question about a metric over time. It renders a range query as an
-   ASCII chart with per-series min / avg / max / last — a few hundred
-   tokens instead of the tens of thousands that raw samples cost.
+   ASCII chart with per-series min / avg / max / last. The chart costs a few
+   hundred tokens, and the raw samples cost tens of thousands.
 3. Zoom in: `query` and `query_range` return exact values. Use them on
    narrow windows or aggregated expressions once a chart has shown where
    to look.
+
+Time arguments accept 'now', 'now-5h', '+2h', RFC-3339 timestamps, and Unix
+epoch seconds or milliseconds. Durations accept units s, m, h, d, and w, such
+as '1h30m'.
 """
 
 mcp: FastMCP[None] = FastMCP(
     "prometheus-mcp",
     instructions=INSTRUCTIONS,
     lifespan=lifespan,
+    middleware=[PrometheusErrorMiddleware()],
+    mask_error_details=True,
+    tools=[*admin.TOOLS, *discovery.TOOLS, *query.TOOLS, *chart.TOOLS],
 )
-
-
-from prometheus_mcp import tools  # noqa: E402, F401  -- imported for side effects

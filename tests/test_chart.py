@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -10,7 +10,7 @@ from prometheus_mcp.chart import ChartSeries, format_series_label, render_chart
 
 @pytest.fixture
 def window() -> tuple[datetime, datetime]:
-    start = datetime(2026, 5, 13, 12, 0, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
     end = start + timedelta(minutes=10)
     return start, end
 

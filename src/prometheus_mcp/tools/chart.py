@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 import math
-from typing import Annotated
+from collections.abc import Callable
+from typing import Annotated, Any
 
-from fastmcp.tools import ToolResult
+from fastmcp.dependencies import Shared
+from fastmcp.tools import ToolResult, tool
 from pydantic import Field
 
-from prometheus_mcp import server as server_module
 from prometheus_mcp.chart import ChartSeries, format_series_label, render_chart
-from prometheus_mcp.prometheus import get_client
-from prometheus_mcp.server import mcp
-from prometheus_mcp.time_range import format_duration_human, parse_range
+from prometheus_mcp.prometheus import PrometheusServers, prometheus_servers
+from prometheus_mcp.time_range import format_duration_human, parse_range, parse_step
 from prometheus_mcp.tools.discovery import ServerSlug
-from prometheus_mcp.tools.query import EndArgument, PromQL, StartArgument
-
-_READ_ONLY = {
-    "readOnlyHint": True,
-    "idempotentHint": True,
-    "openWorldHint": True,
-}
+from prometheus_mcp.tools.effects import READ, READS
+from prometheus_mcp.tools.query import (
+    EndArgument,
+    PromQL,
+    StartArgument,
+    TimeoutArgument,
+)
 
 ChartWidth = Annotated[
     int,
@@ -59,9 +59,9 @@ MaxSeries = Annotated[
         ge=1,
         le=20,
         description=(
-            "Refuse to draw if the result has more than this many series — an "
-            "overplotted chart isn't useful. Use PromQL `topk` or label "
-            "selectors to narrow further."
+            "Refuse to draw if the result has more than this many series, "
+            "because an overplotted chart isn't useful. Use PromQL `topk` or "
+            "label selectors to narrow further."
         ),
     ),
 ]
@@ -84,8 +84,8 @@ _GAP_STEPS = 1.5
 
 _EMPTY_HINT = (
     "No series matched in this window. The metric may not exist, the label "
-    "selectors may not match, or there may be no samples in this time range "
-    "— try a wider window, or `list_series` to check what exists."
+    "selectors may not match, or there may be no samples in this time range. "
+    "Try a wider window, or `list_series` to check what exists."
 )
 
 
@@ -127,7 +127,7 @@ def _too_many_series_text(
     return "\n".join(lines)
 
 
-@mcp.tool(annotations={"title": "Chart a range query", **_READ_ONLY})
+@tool(title="Chart a range query", tags={"chart", READ}, annotations=READS)
 async def chart_range(
     server: ServerSlug,
     expr: PromQL,
@@ -138,15 +138,18 @@ async def chart_range(
     height: ChartHeight = 18,
     max_series: MaxSeries = 5,
     overlay: Overlay = False,
+    timeout: TimeoutArgument = None,
+    servers: PrometheusServers = Shared(prometheus_servers),
 ) -> ToolResult:
-    """Run a range query and render it as an ASCII chart — the recommended
-    first step for any question about how a metric behaves over time.
+    """Run a range query and render it as an ASCII chart. This is the
+    recommended first step for any question about how a metric behaves over
+    time.
 
     The chart compresses a range query into a few hundred tokens: the plot
     shows trend, spikes, dips, gaps, and periodicity, and the legend
     reports min / avg / max / last for every series, which often answers
     the question without another call. ``query_range`` returns the same
-    window as raw samples at many times the size — reach for it only when
+    window as raw samples at many times the size. Reach for it only when
     you need exact values, and narrow the window first using what the
     chart shows.
 
@@ -169,11 +172,16 @@ async def chart_range(
         f"to {end_dt.isoformat(timespec='seconds')} "
         f"(step {format_duration_human(step_dt)})."
     )
-    client = get_client(server, server_module.SERVERS)
-    payload = await client.query_range(expr, start=start_dt, end=end_dt, step=step_dt)
+    payload = await servers.client(server).query_range(
+        expr,
+        start=start_dt,
+        end=end_dt,
+        step=step_dt,
+        timeout=parse_step(timeout) if timeout is not None else None,
+    )
 
     result_type = payload.get("resultType")
-    raw_series = payload.get("result") or []
+    raw_series: list[dict[str, Any]] = payload.get("result") or []
     if result_type != "matrix":
         return ToolResult(
             content=(
@@ -220,3 +228,6 @@ async def chart_range(
         overlay=overlay,
     )
     return ToolResult(content=chart_string)
+
+
+TOOLS: list[Callable[..., object]] = [chart_range]

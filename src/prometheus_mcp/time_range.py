@@ -15,7 +15,7 @@ so the Prometheus client can serialize them straight to the wire.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 __all__ = [
     "TimeRangeError",
@@ -32,7 +32,7 @@ def format_duration_human(value: timedelta) -> str:
     seconds = value.total_seconds()
     if seconds.is_integer():
         return f"{int(seconds)}s"
-    return f"{int(round(seconds * 1_000))}ms"
+    return f"{round(seconds * 1_000)}ms"
 
 
 class TimeRangeError(ValueError):
@@ -59,7 +59,7 @@ def parse_duration(value: str) -> timedelta:
     return timedelta(seconds=total)
 
 
-def parse_step(value: str | int | float) -> timedelta:
+def parse_step(value: str | float) -> timedelta:
     """Parse a query step. Accepts numeric seconds or a duration string."""
     if isinstance(value, bool):
         raise TimeRangeError(f"invalid step: {value!r}")
@@ -83,7 +83,7 @@ def parse_step(value: str | int | float) -> timedelta:
 
 
 def parse_time(
-    value: str | int | float,
+    value: str | float,
     *,
     now: datetime | None = None,
 ) -> datetime:
@@ -97,7 +97,7 @@ def parse_time(
     if not text:
         raise TimeRangeError("empty time value")
 
-    reference = now if now is not None else datetime.now(timezone.utc)
+    reference = now if now is not None else datetime.now(UTC)
 
     if text == "now":
         return reference
@@ -117,8 +117,8 @@ def parse_time(
         pass
     else:
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     try:
         return _epoch_to_datetime(float(text))
@@ -127,9 +127,9 @@ def parse_time(
 
 
 def parse_range(
-    start: str | int | float | None = None,
-    end: str | int | float | None = None,
-    step: str | int | float | None = None,
+    start: str | float | None = None,
+    end: str | float | None = None,
+    step: str | float | None = None,
     *,
     now: datetime | None = None,
     target_samples: int = _TARGET_RANGE_POINTS,
@@ -140,7 +140,7 @@ def parse_range(
     ``step`` is unset, it is picked so that the range yields roughly
     ``target_samples`` samples with a 15s floor.
     """
-    reference = now if now is not None else datetime.now(timezone.utc)
+    reference = now if now is not None else datetime.now(UTC)
     end_dt = parse_time(end if end is not None else "now", now=reference)
     start_dt = parse_time(start if start is not None else "now-1h", now=reference)
     if start_dt >= end_dt:
@@ -160,4 +160,4 @@ def parse_range(
 
 def _epoch_to_datetime(value: float) -> datetime:
     seconds = value / 1_000 if abs(value) > _EPOCH_MS_THRESHOLD else value
-    return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    return datetime.fromtimestamp(seconds, tz=UTC)

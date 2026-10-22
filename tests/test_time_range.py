@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -24,7 +24,7 @@ def test_format_duration_human_fractional_seconds_renders_as_ms() -> None:
 
 @pytest.fixture
 def now() -> datetime:
-    return datetime(2026, 5, 13, 12, 0, 0, tzinfo=timezone.utc)
+    return datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(
@@ -71,17 +71,17 @@ def test_parse_time_relative(text: str, delta: timedelta, now: datetime) -> None
 
 def test_parse_time_iso_with_offset() -> None:
     parsed = parse_time("2026-05-13T07:00:00-05:00")
-    assert parsed == datetime(2026, 5, 13, 12, 0, 0, tzinfo=timezone.utc)
+    assert parsed == datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 
 
 def test_parse_time_iso_without_offset_assumed_utc() -> None:
     parsed = parse_time("2026-05-13T12:00:00")
-    assert parsed == datetime(2026, 5, 13, 12, 0, 0, tzinfo=timezone.utc)
+    assert parsed == datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 
 
 def test_parse_time_iso_with_z_suffix() -> None:
     parsed = parse_time("2026-05-13T12:00:00Z")
-    assert parsed == datetime(2026, 5, 13, 12, 0, 0, tzinfo=timezone.utc)
+    assert parsed == datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 
 
 def test_parse_time_unix_epoch_seconds_int() -> None:
@@ -90,15 +90,13 @@ def test_parse_time_unix_epoch_seconds_int() -> None:
 
 
 def test_parse_time_unix_epoch_seconds_string() -> None:
-    assert parse_time("1780000000") == datetime.fromtimestamp(
-        1_780_000_000, tz=timezone.utc
-    )
+    assert parse_time("1780000000") == datetime.fromtimestamp(1_780_000_000, tz=UTC)
 
 
 def test_parse_time_unix_epoch_ms_auto_detected() -> None:
     ms = 1_780_000_000_000
     parsed = parse_time(ms)
-    assert parsed == datetime.fromtimestamp(ms / 1_000, tz=timezone.utc)
+    assert parsed == datetime.fromtimestamp(ms / 1_000, tz=UTC)
 
 
 def test_parse_time_rejects_bool() -> None:
@@ -122,9 +120,9 @@ def test_parse_time_rejects_bad_relative(now: datetime) -> None:
 
 
 def test_parse_time_defaults_now_when_unset() -> None:
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     parsed = parse_time("now")
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
     assert before <= parsed <= after
 
 
@@ -140,7 +138,7 @@ def test_parse_time_defaults_now_when_unset() -> None:
     ],
 )
 def test_parse_step_accepts_durations_and_numerics(
-    value: str | int | float, seconds: float
+    value: str | float, seconds: float
 ) -> None:
     assert parse_step(value).total_seconds() == seconds
 

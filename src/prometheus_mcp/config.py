@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 __all__ = [
     "ConfigError",
@@ -50,6 +51,10 @@ class UnknownServerError(KeyError):
             hint = "no servers are configured (set PROMETHEUS_MCP_SERVERS)"
         super().__init__(f"unknown Prometheus server {slug!r} ({hint})")
 
+    def __str__(self) -> str:
+        # KeyError quotes its message, which would wrap this sentence in quotes.
+        return str(self.args[0])
+
 
 @dataclass(frozen=True)
 class ServerConfig:
@@ -58,6 +63,17 @@ class ServerConfig:
     slug: str
     url: str
     headers: Mapping[str, str] = field(default_factory=lambda: _EMPTY_HEADERS)
+
+    @property
+    def public_url(self) -> str:
+        """The URL without the user name and password it may hold.
+
+        httpx sends a URL's user name and password as basic authentication, so
+        an operator can put credentials in the URL. Show this form instead.
+        """
+        parts = urlsplit(self.url)
+        host = parts.netloc.rpartition("@")[2]
+        return urlunsplit(parts._replace(netloc=host))
 
 
 def load_servers(env: Mapping[str, str] | None = None) -> dict[str, ServerConfig]:

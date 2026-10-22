@@ -59,6 +59,9 @@ packages = ["src/prometheus_mcp"]
 [tool.ruff]
 target-version = "py312"
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastmcp.dependencies.Shared"]
+
 [tool.pytest.ini_options]
 addopts = [
     "--cov=src/prometheus_mcp",

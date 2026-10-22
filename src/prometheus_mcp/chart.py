@@ -17,17 +17,24 @@ from __future__ import annotations
 
 import bisect
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
-import asciichartpy
+import asciichartpy  # pyright: ignore[reportMissingTypeStubs]
 
 __all__ = [
     "ChartSeries",
     "format_series_label",
     "render_chart",
 ]
+
+# asciichartpy has no type information, so give its one function a type here.
+_plot = cast(
+    Callable[[Any, dict[str, Any]], str],
+    asciichartpy.plot,  # pyright: ignore[reportUnknownMemberType]
+)
 
 
 @dataclass(frozen=True)
@@ -110,7 +117,7 @@ def render_chart(
             not math.isnan(value) for columns in resampled for value in columns
         )
         parts.extend(legends)
-        parts.append(asciichartpy.plot(plot_input, config) if has_data else "")
+        parts.append(_plot(plot_input, config) if has_data else "")
     else:
         panel_height = max(4, height // len(series))
         for legend_line, columns in zip(legends, resampled):
@@ -119,7 +126,7 @@ def render_chart(
                 "format": _label_format_string([columns]),
             }
             parts.append(legend_line)
-            parts.append(asciichartpy.plot(columns, config))
+            parts.append(_plot(columns, config))
     parts.append(_render_x_caption(start, end, width))
     return "\n".join(parts)
 
@@ -171,7 +178,7 @@ def _series_stats(
     valid = sorted((ts, value) for ts, value in points if value is not None)
     if not valid:
         return None
-    values = [value for _, value in valid if value is not None]
+    values = [value for _, value in valid]
     return (min(values), sum(values) / len(values), max(values), values[-1])
 
 
@@ -209,7 +216,7 @@ def _resample(
         return [math.nan] * width
 
     times = [t for t, _ in valid]
-    values = [v for _, v in valid if v is not None]
+    values = [v for _, v in valid]
     span = max(1, width - 1)
     return [
         _interpolate(
