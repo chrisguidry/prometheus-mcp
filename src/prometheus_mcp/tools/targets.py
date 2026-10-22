@@ -66,6 +66,20 @@ class Target(BaseModel):
     last_scrape_duration_seconds: float | None = Field(
         description="How long the last scrape took. Null for a dropped target."
     )
+    scrape_interval: str | None = Field(
+        description=(
+            "How often Prometheus scrapes the target, as a Prometheus duration "
+            "such as '1m'. Null for a dropped target, and on Prometheus "
+            "before 2.30."
+        )
+    )
+    scrape_timeout: str | None = Field(
+        description=(
+            "How long Prometheus waits for one scrape before it fails, as a "
+            "Prometheus duration such as '10s'. Null for a dropped target, "
+            "and on Prometheus before 2.30."
+        )
+    )
     scrape_url: str | None = Field(
         description=(
             "The URL Prometheus scrapes, without any user name or password. "
@@ -94,6 +108,8 @@ def _active(raw: dict[str, Any]) -> Target:
         last_error=raw.get("lastError") or None,
         last_scrape=event_time(raw.get("lastScrape")),
         last_scrape_duration_seconds=raw.get("lastScrapeDuration"),
+        scrape_interval=raw.get("scrapeInterval") or None,
+        scrape_timeout=raw.get("scrapeTimeout") or None,
         scrape_url=without_credentials(scrape_url) if scrape_url else None,
     )
 
@@ -111,6 +127,8 @@ def _dropped(raw: dict[str, Any]) -> Target:
         last_error=None,
         last_scrape=None,
         last_scrape_duration_seconds=None,
+        scrape_interval=None,
+        scrape_timeout=None,
         scrape_url=None,
     )
 
@@ -147,6 +165,18 @@ async def list_targets(
             )
         ),
     ] = None,
+    scrape_pool: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Only list targets of the scrape pool with exactly this name, "
+                "which is a `job_name` in the scrape config. Prometheus 2.42 and "
+                "later filter by scrape pool themselves, so this is cheaper "
+                "than `job` on a server with many targets. Default: every "
+                "scrape pool."
+            )
+        ),
+    ] = None,
     limit: Limit = 100,
     offset: Offset = 0,
     servers: PrometheusServers = Shared(prometheus_servers),
@@ -158,9 +188,10 @@ async def list_targets(
     failing targets. ``total`` counts the targets after the filters and
     before paging.
     """
-    raw = await servers.client(server).targets(state=state)
-    # Prometheus filters by state itself. Checking again here keeps a server
-    # that ignores `state` from mixing dropped targets into a list of active ones.
+    raw = await servers.client(server).targets(state=state, scrape_pool=scrape_pool)
+    # Prometheus filters by state, and from 2.42 by scrape pool. Checking again
+    # here keeps a server that ignores either parameter from mixing in the
+    # targets that the caller left out.
     active: list[dict[str, Any]] = raw.get("activeTargets") or []
     dropped: list[dict[str, Any]] = raw.get("droppedTargets") or []
     targets: list[Target] = []
@@ -173,6 +204,7 @@ async def list_targets(
         for target in targets
         if (health is None or target.health == health)
         and (job is None or target.job == job)
+        and (scrape_pool is None or target.scrape_pool == scrape_pool)
     ]
     return TargetsPage(
         server=server,

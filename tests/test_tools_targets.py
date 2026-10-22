@@ -15,6 +15,7 @@ def active_target(
     instance: str,
     *,
     job: str = "node",
+    scrape_pool: str | None = None,
     health: str = "up",
     last_error: str = "",
     scrape_url: str | None = None,
@@ -29,7 +30,7 @@ def active_target(
             "job": job,
         },
         "labels": {"instance": instance, "job": job},
-        "scrapePool": job,
+        "scrapePool": scrape_pool or job,
         "scrapeUrl": scrape_url or f"http://{instance}/metrics",
         "globalUrl": f"http://{instance}/metrics",
         "lastError": last_error,
@@ -97,6 +98,8 @@ async def test_list_targets_returns_each_active_target(
                 "last_error": "connection refused",
                 "last_scrape": "2026-05-13T11:59:45.123456789Z",
                 "last_scrape_duration_seconds": 0.050688943,
+                "scrape_interval": "1m",
+                "scrape_timeout": "10s",
                 "scrape_url": "http://a:9100/metrics",
             }
         ],
@@ -129,6 +132,19 @@ async def test_list_targets_reports_a_target_never_scraped_without_a_time(
     result = await mcp_client.call_tool("list_targets", {"server": "prefect"})
     assert result.structured_content is not None
     assert result.structured_content["targets"][0]["last_scrape"] is None
+
+
+async def test_list_targets_reports_no_scrape_interval_when_prometheus_omits_it(
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
+) -> None:
+    """Prometheus before 2.30 reports no `scrapeInterval` or `scrapeTimeout`."""
+    target = active_target("a:9100")
+    del target["scrapeInterval"], target["scrapeTimeout"]
+    mock_router.get(TARGETS_URL).mock(return_value=targets_response([target]))
+    result = await mcp_client.call_tool("list_targets", {"server": "prefect"})
+    assert result.structured_content is not None
+    listed = result.structured_content["targets"][0]
+    assert (listed["scrape_interval"], listed["scrape_timeout"]) == (None, None)
 
 
 async def test_list_targets_drops_credentials_from_the_scrape_url(
@@ -174,6 +190,8 @@ async def test_list_targets_returns_dropped_targets_with_their_discovered_labels
             "last_error": None,
             "last_scrape": None,
             "last_scrape_duration_seconds": None,
+            "scrape_interval": None,
+            "scrape_timeout": None,
             "scrape_url": None,
         }
     ]
@@ -199,6 +217,24 @@ async def test_list_targets_asks_prometheus_for_one_state(
     assert route.calls.last.request.url.params["state"] == state
 
 
+@pytest.mark.parametrize(
+    ("arguments", "params"),
+    [
+        ({}, [("state", "active")]),
+        ({"scrape_pool": "api"}, [("state", "active"), ("scrapePool", "api")]),
+    ],
+)
+async def test_list_targets_asks_prometheus_for_one_scrape_pool(
+    mcp_client: Client[FastMCPTransport],
+    mock_router: respx.Router,
+    arguments: dict[str, str],
+    params: list[tuple[str, str]],
+) -> None:
+    route = mock_router.get(TARGETS_URL).mock(return_value=targets_response([]))
+    await mcp_client.call_tool("list_targets", {"server": "prefect", **arguments})
+    assert list(route.calls.last.request.url.params.multi_items()) == params
+
+
 async def test_list_targets_lists_active_targets_before_dropped_ones(
     mcp_client: Client[FastMCPTransport], mock_router: respx.Router
 ) -> None:
@@ -219,8 +255,8 @@ async def test_list_targets_lists_active_targets_before_dropped_ones(
 
 @pytest.fixture
 def mixed_targets(mock_router: respx.Router) -> None:
-    """Targets of two jobs in every health, answered for any `state`, as a
-    Prometheus that ignores the parameter would answer."""
+    """Targets of two jobs in every health, answered for any `state` and
+    `scrapePool`, as a Prometheus that ignores those parameters would answer."""
     mock_router.get(TARGETS_URL).mock(
         return_value=targets_response(
             [
@@ -228,6 +264,7 @@ def mixed_targets(mock_router: respx.Router) -> None:
                 active_target("b:9100", job="node", health="down"),
                 active_target("a:8080", job="api", health="down"),
                 active_target("b:8080", job="api", health="unknown"),
+                active_target("c:8080", job="api", scrape_pool="api-canary"),
             ],
             [dropped_target("c:9100", job="node")],
         )
@@ -239,16 +276,22 @@ def mixed_targets(mock_router: respx.Router) -> None:
     [
         ({"health": "down"}, ["b:9100", "a:8080"]),
         ({"health": "unknown"}, ["b:8080"]),
-        ({"job": "api"}, ["a:8080", "b:8080"]),
+        ({"job": "api"}, ["a:8080", "b:8080", "c:8080"]),
         ({"job": "node"}, ["a:9100", "b:9100"]),
         ({"job": "node", "state": "dropped"}, [None]),
         ({"job": "node", "health": "up"}, ["a:9100"]),
         ({"job": "node", "state": "any"}, ["a:9100", "b:9100", None]),
         ({"health": "down", "state": "any"}, ["b:9100", "a:8080"]),
         ({"job": "worker"}, []),
+        ({"scrape_pool": "api"}, ["a:8080", "b:8080"]),
+        ({"scrape_pool": "api-canary"}, ["c:8080"]),
+        ({"scrape_pool": "node", "state": "dropped"}, [None]),
+        ({"scrape_pool": "node", "health": "down"}, ["b:9100"]),
+        ({"scrape_pool": "api", "job": "node"}, []),
+        ({"scrape_pool": "worker", "state": "any"}, []),
     ],
 )
-async def test_list_targets_filters_by_health_and_job(
+async def test_list_targets_filters_by_health_job_and_scrape_pool(
     mcp_client: Client[FastMCPTransport],
     mixed_targets: None,
     arguments: dict[str, str],

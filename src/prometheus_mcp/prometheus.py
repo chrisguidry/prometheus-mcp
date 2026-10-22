@@ -243,11 +243,14 @@ class PrometheusClient:
             "query_range", params=params, timeout=self._query_wait(timeout)
         )
 
-    async def targets(self, *, state: str) -> dict[str, Any]:
+    async def targets(
+        self, *, state: str, scrape_pool: str | None = None
+    ) -> dict[str, Any]:
         """``state`` is ``active``, ``dropped``, or ``any``."""
-        data: dict[str, Any] | None = await self.request(
-            "targets", params=[("state", state)]
-        )
+        params: list[tuple[str, str]] = [("state", state)]
+        if scrape_pool is not None:
+            params.append(("scrapePool", scrape_pool))
+        data: dict[str, Any] | None = await self.request("targets", params=params)
         return data or {}
 
     async def alerts(self) -> list[dict[str, Any]]:
@@ -255,7 +258,11 @@ class PrometheusClient:
         return (data or {}).get("alerts") or []
 
     async def rules(
-        self, *, rule_type: str | None = None, group: str | None = None
+        self,
+        *,
+        rule_type: str | None = None,
+        group: str | None = None,
+        exclude_alerts: bool = False,
     ) -> list[dict[str, Any]]:
         """Return the rule groups. ``rule_type`` is ``alert`` or ``record``."""
         params: list[tuple[str, str]] = []
@@ -263,6 +270,8 @@ class PrometheusClient:
             params.append(("type", rule_type))
         if group is not None:
             params.append(("rule_group[]", group))
+        if exclude_alerts:
+            params.append(("exclude_alerts", "true"))
         data: dict[str, Any] | None = await self.request("rules", params=params)
         return (data or {}).get("groups") or []
 

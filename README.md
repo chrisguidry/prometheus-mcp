@@ -107,13 +107,29 @@ that does not answer stays in the list, with a null `version`.
 These tools answer why data is missing or what Prometheus is alerting
 on. `list_targets` lists active targets by default; pass
 `state: "dropped"` or `"any"` to see the targets that relabeling
-removed. It filters by `health` and `job`, and shows each scrape URL
-without its user name or password. `list_alerts` filters by `state`
-(`firing` or `pending`). Prometheus lists only active alerts, so an
-alerting rule with no active alerts appears in `list_rules` with the
-state `inactive`. `list_rules` filters by `type` (`alert` or `record`)
-and by `group`, and includes each alerting rule's active alerts. All
-three page with `limit` and `offset`.
+removed. It filters by `health`, `job`, and `scrape_pool`. It shows
+each target's scrape interval, scrape timeout, and scrape URL, without
+the URL's user name or password.
+
+`list_alerts` filters by `state` (`firing` or `pending`), by
+`alertname`, and by `labels`, a set of label names and the exact value
+each one must have. It lists alerts firing before pending and oldest
+first, in the same order on every call, so paging neither repeats nor
+skips an alert. Prometheus lists only active alerts, so an alerting
+rule with no active alerts appears in `list_rules` with the state
+`inactive`.
+
+`list_rules` filters by `type` (`alert` or `record`) and by `group`,
+and includes each alerting rule's active alerts, firing before pending
+and oldest first. One rule can have thousands of active alerts. Pass
+`include_alerts: false` to list the rules without their alerts, or
+`max_alerts_per_rule` to list only the first few, with
+`omitted_alerts` counting the rest.
+
+All three tools page with `limit` and `offset`. Prometheus 2.42 and
+later filter targets by scrape pool, and Prometheus 2.49 and later
+leave out the alerts of each rule on request. An older server ignores
+those parameters, so the tools apply them themselves.
 
 ### Query
 

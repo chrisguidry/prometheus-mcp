@@ -13,14 +13,18 @@ ALERTS_URL = "https://prom.example/api/v1/alerts"
 
 
 def alert(
-    name: str, *, state: str = "firing", instance: str = "a:9100"
+    name: str,
+    *,
+    state: str = "firing",
+    instance: str = "a:9100",
+    active_at: str = "2026-05-13T11:50:12.60602144Z",
 ) -> dict[str, Any]:
     """One active alert, shaped like Prometheus 3.x returns it."""
     return {
         "labels": {"alertname": name, "instance": instance, "severity": "page"},
         "annotations": {"summary": f"{name} on {instance}"},
         "state": state,
-        "activeAt": "2026-05-13T11:50:12.60602144Z",
+        "activeAt": active_at,
         "value": "1e+00",
     }
 
@@ -120,6 +124,7 @@ async def test_list_rules_returns_an_alerting_rule_with_its_alerts(
                         "value": "1e+00",
                     }
                 ],
+                "omitted_alerts": 0,
             }
         ],
     }
@@ -158,6 +163,7 @@ async def test_list_rules_returns_a_recording_rule_with_its_error(
             "duration_seconds": None,
             "annotations": None,
             "alerts": None,
+            "omitted_alerts": None,
         }
     ]
 
@@ -187,17 +193,92 @@ async def test_list_rules_reports_a_rule_never_evaluated_without_a_time(
             {"type": "alert", "group": "nodes"},
             [("type", "alert"), ("rule_group[]", "nodes")],
         ),
+        ({"include_alerts": True}, []),
+        ({"include_alerts": False}, [("exclude_alerts", "true")]),
+        (
+            {"group": "nodes", "include_alerts": False},
+            [("rule_group[]", "nodes"), ("exclude_alerts", "true")],
+        ),
     ],
 )
 async def test_list_rules_asks_prometheus_to_filter(
     mcp_client: Client[FastMCPTransport],
     mock_router: respx.Router,
-    arguments: dict[str, str],
+    arguments: dict[str, object],
     params: list[tuple[str, str]],
 ) -> None:
     route = mock_router.get(RULES_URL).mock(return_value=success({"groups": []}))
     await mcp_client.call_tool("list_rules", {"server": "prefect", **arguments})
     assert list(route.calls.last.request.url.params.multi_items()) == params
+
+
+@pytest.fixture
+def crowded_rule(mock_router: respx.Router) -> None:
+    """One alerting rule with five active alerts, in the arbitrary order that
+    Prometheus returns them, answered whatever `exclude_alerts` says, as a
+    Prometheus before 2.49 would answer."""
+    alerts = [
+        alert("NodeDown", state="pending", instance="b", active_at="2026-05-13T11:40Z"),
+        alert("NodeDown", instance="c", active_at="2026-05-13T11:50:12.60602144Z"),
+        alert("NodeDown", instance="d"),
+        alert("NodeDown", instance="e", active_at="2026-05-13T11:50:12.6Z"),
+        alert("NodeDown", instance="a", active_at="2026-05-13T11:50:12.6Z"),
+    ]
+    del alerts[2]["activeAt"]
+    mock_router.get(RULES_URL).mock(
+        return_value=success(
+            {"groups": [group("nodes", [alerting_rule("NodeDown", alerts=alerts)])]}
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "instances", "omitted"),
+    [
+        ({}, ["a", "e", "c", "d", "b"], 0),
+        ({"max_alerts_per_rule": 9}, ["a", "e", "c", "d", "b"], 0),
+        ({"max_alerts_per_rule": 2}, ["a", "e"], 3),
+        ({"max_alerts_per_rule": 0}, [], 5),
+    ],
+)
+async def test_list_rules_lists_firing_alerts_first_up_to_the_cap(
+    mcp_client: Client[FastMCPTransport],
+    crowded_rule: None,
+    arguments: dict[str, object],
+    instances: list[str],
+    omitted: int,
+) -> None:
+    result = await mcp_client.call_tool(
+        "list_rules", {"server": "prefect", **arguments}
+    )
+    assert result.structured_content is not None
+    [rule] = result.structured_content["rules"]
+    assert [a["labels"]["instance"] for a in rule["alerts"]] == instances
+    assert rule["omitted_alerts"] == omitted
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"include_alerts": False},
+        {"include_alerts": False, "max_alerts_per_rule": 1},
+    ],
+)
+async def test_list_rules_leaves_out_alerts_that_prometheus_still_returns(
+    mcp_client: Client[FastMCPTransport],
+    crowded_rule: None,
+    arguments: dict[str, object],
+) -> None:
+    result = await mcp_client.call_tool(
+        "list_rules", {"server": "prefect", **arguments}
+    )
+    assert result.structured_content is not None
+    [rule] = result.structured_content["rules"]
+    assert (rule["state"], rule["alerts"], rule["omitted_alerts"]) == (
+        "firing",
+        None,
+        None,
+    )
 
 
 async def test_list_rules_pages_across_groups(
@@ -270,10 +351,10 @@ def mixed_alerts(mock_router: respx.Router) -> None:
 @pytest.mark.parametrize(
     ("arguments", "alerts"),
     [
-        ({}, [("NodeDown", "a:9100"), ("NodeDown", "b:9100"), ("DiskFull", "a:9100")]),
-        ({"state": "firing"}, [("NodeDown", "a:9100"), ("DiskFull", "a:9100")]),
+        ({}, [("DiskFull", "a:9100"), ("NodeDown", "a:9100"), ("NodeDown", "b:9100")]),
+        ({"state": "firing"}, [("DiskFull", "a:9100"), ("NodeDown", "a:9100")]),
         ({"state": "pending"}, [("NodeDown", "b:9100")]),
-        ({"limit": 1, "offset": 2}, [("DiskFull", "a:9100")]),
+        ({"limit": 1, "offset": 2}, [("NodeDown", "b:9100")]),
     ],
 )
 async def test_list_alerts_filters_by_state_and_pages(
@@ -290,6 +371,76 @@ async def test_list_alerts_filters_by_state_and_pages(
         (alert["labels"]["alertname"], alert["labels"]["instance"])
         for alert in result.structured_content["alerts"]
     ] == alerts
+
+
+@pytest.mark.parametrize(
+    ("arguments", "alerts"),
+    [
+        ({"alertname": "NodeDown"}, [("NodeDown", "a:9100"), ("NodeDown", "b:9100")]),
+        ({"alertname": "Watchdog"}, []),
+        ({"alertname": "NodeDown", "state": "pending"}, [("NodeDown", "b:9100")]),
+        (
+            {"labels": {"instance": "a:9100"}},
+            [("DiskFull", "a:9100"), ("NodeDown", "a:9100")],
+        ),
+        (
+            {"labels": {"instance": "a:9100", "alertname": "DiskFull"}},
+            [("DiskFull", "a:9100")],
+        ),
+        (
+            {"alertname": "NodeDown", "labels": {"instance": "b:9100"}},
+            [("NodeDown", "b:9100")],
+        ),
+        ({"alertname": "NodeDown", "labels": {"alertname": "DiskFull"}}, []),
+        ({"labels": {"severity": "ticket"}}, []),
+        ({"labels": {"team": ""}, "alertname": "DiskFull"}, [("DiskFull", "a:9100")]),
+        ({"labels": {"severity": ""}}, []),
+        (
+            {"labels": {}},
+            [("DiskFull", "a:9100"), ("NodeDown", "a:9100"), ("NodeDown", "b:9100")],
+        ),
+    ],
+)
+async def test_list_alerts_filters_by_name_and_labels(
+    mcp_client: Client[FastMCPTransport],
+    mixed_alerts: None,
+    arguments: dict[str, object],
+    alerts: list[tuple[str, str]],
+) -> None:
+    result = await mcp_client.call_tool(
+        "list_alerts", {"server": "prefect", **arguments}
+    )
+    assert result.structured_content is not None
+    assert [
+        (alert["labels"]["alertname"], alert["labels"]["instance"])
+        for alert in result.structured_content["alerts"]
+    ] == alerts
+    assert result.structured_content["total"] == len(alerts)
+
+
+async def test_list_alerts_pages_the_same_whatever_order_prometheus_returns(
+    mcp_client: Client[FastMCPTransport], mock_router: respx.Router
+) -> None:
+    alerts = [
+        alert("NodeDown", state="pending", instance="b", active_at="2026-05-13T11:40Z"),
+        alert("NodeDown", instance="c", active_at="2026-05-13T11:50:12.60602144Z"),
+        alert("NodeDown", instance="e", active_at="2026-05-13T11:50:12.6Z"),
+        alert("NodeDown", instance="a", active_at="2026-05-13T11:50:12.6Z"),
+    ]
+    mock_router.get(ALERTS_URL).mock(
+        side_effect=[
+            success({"alerts": alerts}),
+            success({"alerts": alerts[::-1]}),
+        ]
+    )
+    arguments = {"server": "prefect", "limit": 2, "offset": 1}
+    first = await mcp_client.call_tool("list_alerts", arguments)
+    second = await mcp_client.call_tool("list_alerts", arguments)
+    assert first.structured_content is not None
+    assert first.structured_content == second.structured_content
+    assert [
+        alert["labels"]["instance"] for alert in first.structured_content["alerts"]
+    ] == ["e", "c"]
 
 
 async def test_list_alerts_counts_alerts_before_paging(

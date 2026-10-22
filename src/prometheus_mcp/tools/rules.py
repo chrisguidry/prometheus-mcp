@@ -9,6 +9,7 @@ Prometheus HTTP API
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastmcp.dependencies import Shared
@@ -65,6 +66,29 @@ def _alert(raw: dict[str, Any]) -> Alert:
     )
 
 
+_NEVER = datetime.max.replace(tzinfo=UTC)
+
+
+def _firing_then_oldest(
+    alert: Alert,
+) -> tuple[bool, datetime, list[tuple[str, str]]]:
+    """Order alerts the same way on every call: firing before pending, then
+    oldest first, then by labels.
+
+    Prometheus returns a rule's alerts in a different order on each call.
+    Without a fixed order, ``max_alerts_per_rule`` would keep different alerts
+    each time, and paging through ``list_alerts`` could repeat or skip alerts.
+    Alerts from one evaluation share ``active_at``, so their labels break the
+    tie.
+    """
+    # Compare parsed times: Prometheus trims trailing zeros from the fraction
+    # of a second, so the strings of two times do not sort in time order.
+    since = (
+        _NEVER if alert.active_at is None else datetime.fromisoformat(alert.active_at)
+    )
+    return alert.state != "firing", since, sorted(alert.labels.items())
+
+
 class Rule(BaseModel):
     """One alerting or recording rule."""
 
@@ -111,14 +135,34 @@ class Rule(BaseModel):
     )
     alerts: list[Alert] | None = Field(
         description=(
-            "For an alerting rule: its active alerts. Null for a recording rule."
+            "For an alerting rule: its active alerts, firing before pending and "
+            "oldest first, up to `max_alerts_per_rule`. Null for a recording "
+            "rule, and when `include_alerts` is false."
+        )
+    )
+    omitted_alerts: int | None = Field(
+        description=(
+            "For an alerting rule: how many of its active alerts "
+            "`max_alerts_per_rule` left out of `alerts`. Null for a recording "
+            "rule, and when `include_alerts` is false."
         )
     )
 
 
-def _rule(group: dict[str, Any], raw: dict[str, Any]) -> Rule:
+def _rule(
+    group: dict[str, Any],
+    raw: dict[str, Any],
+    *,
+    include_alerts: bool,
+    max_alerts: int | None,
+) -> Rule:
     alerting = raw.get("type") == "alerting"
-    alerts: list[dict[str, Any]] = raw.get("alerts") or []
+    alerts: list[Alert] | None = None
+    omitted: int | None = None
+    if alerting and include_alerts:
+        active = sorted(map(_alert, raw.get("alerts") or []), key=_firing_then_oldest)
+        alerts = active[:max_alerts]
+        omitted = len(active) - len(alerts)
     return Rule(
         group=group.get("name", ""),
         file=group.get("file", ""),
@@ -133,7 +177,8 @@ def _rule(group: dict[str, Any], raw: dict[str, Any]) -> Rule:
         state=raw.get("state") if alerting else None,
         duration_seconds=raw.get("duration") if alerting else None,
         annotations=(raw.get("annotations") or {}) if alerting else None,
-        alerts=[_alert(alert) for alert in alerts] if alerting else None,
+        alerts=alerts,
+        omitted_alerts=omitted,
     )
 
 
@@ -148,7 +193,11 @@ class RulesPage(Page):
 
 
 class AlertsPage(Page):
-    alerts: list[Alert] = Field(description="Active alerts on this page.")
+    alerts: list[Alert] = Field(
+        description=(
+            "Active alerts on this page, firing before pending and oldest first."
+        )
+    )
 
 
 @tool(title="List rules", tags={"rules", READ}, annotations=READS)
@@ -172,6 +221,27 @@ async def list_rules(
             )
         ),
     ] = None,
+    include_alerts: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether each alerting rule lists its active alerts in "
+                "`alerts`. Pass false to list the rules alone, which keeps the "
+                "answer small when rules have many alerts. Default: true."
+            )
+        ),
+    ] = True,
+    max_alerts_per_rule: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            description=(
+                "The most active alerts to list for each alerting rule, firing "
+                "before pending and oldest first. `omitted_alerts` counts the "
+                "rest. Ignored when `include_alerts` is false. Default: no limit."
+            ),
+        ),
+    ] = None,
     limit: Limit = 100,
     offset: Offset = 0,
     servers: PrometheusServers = Shared(prometheus_servers),
@@ -181,13 +251,23 @@ async def list_rules(
     Each rule reports its ``health`` and ``last_error``, so a rule that fails
     to evaluate is easy to find. Each alerting rule reports its ``state`` and
     its active ``alerts``. A rule whose ``state`` is 'inactive' has no
-    active alerts, and ``list_alerts`` does not list it. Paging counts rules
+    active alerts, and ``list_alerts`` does not list it. One rule can have
+    thousands of active alerts: pass ``include_alerts=false`` or
+    ``max_alerts_per_rule`` to keep the answer small. Paging counts rules
     across all groups.
     """
     groups = await servers.client(server).rules(
-        rule_type=None if type == "any" else type, group=group
+        rule_type=None if type == "any" else type,
+        group=group,
+        exclude_alerts=not include_alerts,
     )
-    rules = [_rule(g, raw) for g in groups for raw in _rules_of(g)]
+    # Prometheus before 2.49 ignores `exclude_alerts` and returns the alerts
+    # anyway, so `_rule` leaves them out itself.
+    rules = [
+        _rule(g, raw, include_alerts=include_alerts, max_alerts=max_alerts_per_rule)
+        for g in groups
+        for raw in _rules_of(g)
+    ]
     return RulesPage(
         server=server,
         total=len(rules),
@@ -209,6 +289,26 @@ async def list_alerts(
             )
         ),
     ] = None,
+    alertname: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Only list alerts whose `alertname` label is exactly this "
+                "value, e.g. 'NodeDown'. Default: every alert name."
+            )
+        ),
+    ] = None,
+    labels: Annotated[
+        dict[str, str] | None,
+        Field(
+            description=(
+                "Only list alerts that have each of these labels with exactly "
+                "this value, e.g. {'severity': 'page'}. As in PromQL, the "
+                "value '' matches an alert that does not have the label. "
+                "Default: no label filter."
+            )
+        ),
+    ] = None,
     limit: Limit = 100,
     offset: Offset = 0,
     servers: PrometheusServers = Shared(prometheus_servers),
@@ -219,11 +319,23 @@ async def list_alerts(
     alerts here: ``list_rules`` with ``type='alert'`` shows every alerting
     rule, including those in the 'inactive' state. This lists the alerts
     Prometheus evaluates, which can differ from what Alertmanager shows after
-    its silences and inhibitions.
+    its silences and inhibitions. Alerts are listed firing before pending and
+    oldest first, in the same order on every call, so paging with ``offset``
+    neither repeats nor skips an alert.
     """
     raw = await servers.client(server).alerts()
-    alerts = [_alert(entry) for entry in raw]
-    matching = [alert for alert in alerts if state is None or alert.state == state]
+    alerts = sorted(map(_alert, raw), key=_firing_then_oldest)
+    # The alerts API takes no filters, so every filter applies here.
+    matching = [
+        alert
+        for alert in alerts
+        if (state is None or alert.state == state)
+        and (alertname is None or alert.labels.get("alertname") == alertname)
+        and all(
+            alert.labels.get(name, "") == value
+            for name, value in (labels or {}).items()
+        )
+    ]
     return AlertsPage(
         server=server,
         total=len(matching),

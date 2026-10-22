@@ -46,8 +46,10 @@ The intended workflow:
 To find out why data is missing or what is wrong, check what Prometheus
 itself reports. `list_targets` shows each scrape target's health and last
 error. `list_alerts` shows the alerts that are pending or firing, and
-`list_rules` shows every alerting and recording rule with its health and
-last error.
+filters them by `alertname` and by exact label values. `list_rules` shows
+every alerting and recording rule with its health and last error. A rule
+can have thousands of active alerts, so pass `include_alerts=false` or
+`max_alerts_per_rule` when only the rules matter.
 
 Time arguments accept 'now', 'now-5h', '+2h', RFC-3339 timestamps, and Unix
 epoch seconds or milliseconds. Durations accept units s, m, h, d, and w, such
