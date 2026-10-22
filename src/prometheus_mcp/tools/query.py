@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from prometheus_mcp.prometheus import PrometheusServers, prometheus_servers
 from prometheus_mcp.time_range import (
-    format_duration_human,
+    format_duration,
     parse_range,
     parse_step,
     parse_time,
@@ -247,7 +247,7 @@ async def query_range(
         resolved=RangeWindow(
             start=start_dt.isoformat(),
             end=end_dt.isoformat(),
-            step=format_duration_human(step_dt),
+            step=format_duration(step_dt),
         ),
         hint=_EMPTY_RANGE_HINT if result_type == "matrix" and total == 0 else None,
     )

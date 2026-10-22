@@ -13,7 +13,7 @@ from fastmcp import FastMCP
 
 from prometheus_mcp.config import load_servers
 from prometheus_mcp.errors import PrometheusErrorMiddleware
-from prometheus_mcp.tools import admin, chart, discovery, query
+from prometheus_mcp.tools import admin, chart, discovery, query, rules, targets
 
 
 @asynccontextmanager
@@ -29,7 +29,7 @@ Tools for exploring the metrics in one or more Prometheus servers. Every tool
 only reads.
 
 Every tool except `list_servers` takes `server`, the slug of one configured
-Prometheus server. `list_servers` names them.
+Prometheus server. `list_servers` names them and reports each one's version.
 
 The intended workflow:
 
@@ -43,6 +43,12 @@ The intended workflow:
    narrow windows or aggregated expressions once a chart has shown where
    to look.
 
+To find out why data is missing or what is wrong, check what Prometheus
+itself reports. `list_targets` shows each scrape target's health and last
+error. `list_alerts` shows the alerts that are pending or firing, and
+`list_rules` shows every alerting and recording rule with its health and
+last error.
+
 Time arguments accept 'now', 'now-5h', '+2h', RFC-3339 timestamps, and Unix
 epoch seconds or milliseconds. Durations accept units s, m, h, d, and w, such
 as '1h30m'.
@@ -54,5 +60,12 @@ mcp: FastMCP[None] = FastMCP(
     lifespan=lifespan,
     middleware=[PrometheusErrorMiddleware()],
     mask_error_details=True,
-    tools=[*admin.TOOLS, *discovery.TOOLS, *query.TOOLS, *chart.TOOLS],
+    tools=[
+        *admin.TOOLS,
+        *discovery.TOOLS,
+        *query.TOOLS,
+        *chart.TOOLS,
+        *targets.TOOLS,
+        *rules.TOOLS,
+    ],
 )

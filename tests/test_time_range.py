@@ -6,7 +6,8 @@ import pytest
 
 from prometheus_mcp.time_range import (
     TimeRangeError,
-    format_duration_human,
+    event_time,
+    format_duration,
     parse_duration,
     parse_range,
     parse_step,
@@ -14,12 +15,29 @@ from prometheus_mcp.time_range import (
 )
 
 
-def test_format_duration_human_whole_seconds() -> None:
-    assert format_duration_human(timedelta(seconds=30)) == "30s"
+def test_format_duration_whole_seconds() -> None:
+    assert format_duration(timedelta(seconds=30)) == "30s"
 
 
-def test_format_duration_human_fractional_seconds_renders_as_ms() -> None:
-    assert format_duration_human(timedelta(milliseconds=500)) == "500ms"
+def test_format_duration_fractional_seconds_renders_as_ms() -> None:
+    assert format_duration(timedelta(milliseconds=500)) == "500ms"
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("2026-05-13T11:59:45.123456789Z", "2026-05-13T11:59:45.123456789Z"),
+        ("2026-05-13T13:59:45+02:00", "2026-05-13T13:59:45+02:00"),
+        ("0001-01-01T00:00:00Z", None),
+        ("", None),
+        (None, None),
+        (1778673585, None),
+    ],
+)
+def test_event_time_reports_no_time_for_an_event_that_never_happened(
+    reported: object, expected: str | None
+) -> None:
+    assert event_time(reported) == expected
 
 
 @pytest.fixture

@@ -12,7 +12,7 @@ from pydantic import Field
 
 from prometheus_mcp.chart import ChartSeries, format_series_label, render_chart
 from prometheus_mcp.prometheus import PrometheusServers, prometheus_servers
-from prometheus_mcp.time_range import format_duration_human, parse_range, parse_step
+from prometheus_mcp.time_range import format_duration, parse_range, parse_step
 from prometheus_mcp.tools.discovery import ServerSlug
 from prometheus_mcp.tools.effects import READ, READS
 from prometheus_mcp.tools.query import (
@@ -170,7 +170,7 @@ async def chart_range(
     window = (
         f"Queried {server} from {start_dt.isoformat(timespec='seconds')} "
         f"to {end_dt.isoformat(timespec='seconds')} "
-        f"(step {format_duration_human(step_dt)})."
+        f"(step {format_duration(step_dt)})."
     )
     payload = await servers.client(server).query_range(
         expr,

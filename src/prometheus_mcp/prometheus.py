@@ -3,7 +3,8 @@
 A thin wrapper around ``httpx.AsyncClient`` that knows how to talk to
 ``/api/v1`` on a Prometheus server, including error translation and the
 handful of GETs the MCP tools need (``labels``, ``label/<name>/values``,
-``series``, ``metadata``, ``query``, ``query_range``).
+``series``, ``metadata``, ``query``, ``query_range``, ``targets``,
+``alerts``, ``rules``, ``status/buildinfo``).
 
 Higher-level concerns, such as paging, time-range parsing, and chart
 rendering, live in other modules. This module deals only in
@@ -25,6 +26,7 @@ import httpx
 from httpx._types import QueryParamTypes
 
 from prometheus_mcp.config import ServerConfig, get_server, load_servers
+from prometheus_mcp.time_range import format_duration
 
 __all__ = [
     "PrometheusAPIError",
@@ -215,7 +217,7 @@ class PrometheusClient:
         if time is not None:
             params.append(("time", _format_time(time)))
         if timeout is not None:
-            params.append(("timeout", _format_duration(timeout)))
+            params.append(("timeout", format_duration(timeout)))
         return await self.request(
             "query", params=params, timeout=self._query_wait(timeout)
         )
@@ -236,10 +238,40 @@ class PrometheusClient:
             ("step", _format_step(step)),
         ]
         if timeout is not None:
-            params.append(("timeout", _format_duration(timeout)))
+            params.append(("timeout", format_duration(timeout)))
         return await self.request(
             "query_range", params=params, timeout=self._query_wait(timeout)
         )
+
+    async def targets(self, *, state: str) -> dict[str, Any]:
+        """``state`` is ``active``, ``dropped``, or ``any``."""
+        data: dict[str, Any] | None = await self.request(
+            "targets", params=[("state", state)]
+        )
+        return data or {}
+
+    async def alerts(self) -> list[dict[str, Any]]:
+        data: dict[str, Any] | None = await self.request("alerts")
+        return (data or {}).get("alerts") or []
+
+    async def rules(
+        self, *, rule_type: str | None = None, group: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return the rule groups. ``rule_type`` is ``alert`` or ``record``."""
+        params: list[tuple[str, str]] = []
+        if rule_type is not None:
+            params.append(("type", rule_type))
+        if group is not None:
+            params.append(("rule_group[]", group))
+        data: dict[str, Any] | None = await self.request("rules", params=params)
+        return (data or {}).get("groups") or []
+
+    async def build_info(self, *, timeout: float | None = None) -> Any:
+        """Return the build properties, such as ``version``, the server reports.
+
+        ``timeout`` is in seconds and replaces the client's timeout.
+        """
+        return await self.request("status/buildinfo", timeout=timeout)
 
     def _query_wait(self, timeout: timedelta | None) -> float | None:
         """How long to wait for a query that Prometheus may run for ``timeout``.
@@ -295,18 +327,6 @@ def _format_step(value: timedelta) -> str:
     """Prometheus accepts numeric seconds (int or float) for ``step``."""
     seconds = value.total_seconds()
     return str(int(seconds)) if seconds.is_integer() else f"{seconds:g}"
-
-
-def _format_duration(value: timedelta) -> str:
-    """Prometheus duration string (e.g. ``30s``, ``500ms``).
-
-    Whole seconds render as ``Ns``; fractional values fall back to ``Nms``
-    since Prometheus's duration grammar rejects fractional second units.
-    """
-    seconds = value.total_seconds()
-    if seconds.is_integer():
-        return f"{int(seconds)}s"
-    return f"{round(seconds * 1_000)}ms"
 
 
 class PrometheusServers:

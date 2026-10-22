@@ -78,7 +78,7 @@ as MCP instructions so agents pick it up automatically.
 
 | Tool             | What it does                                                  |
 | ---------------- | ------------------------------------------------------------- |
-| `list_servers`   | List the configured slugs and their URLs (credentials hidden). |
+| `list_servers`   | List the configured slugs, their URLs (credentials hidden), and their Prometheus versions. |
 | `list_metrics`   | Enumerate metric names (`/api/v1/label/__name__/values`).     |
 | `list_labels`    | Enumerate label names.                                        |
 | `label_values`   | Values seen for a single label (optionally scoped by match).  |
@@ -91,6 +91,29 @@ chunks. `list_metrics`, `list_labels`, `label_values`, and `list_series`
 also accept `start` and `end` to search only one time window. Without
 them, Prometheus searches all the data it holds, which is slow on a
 large store.
+
+`list_servers` asks every server for its version
+(`/api/v1/status/buildinfo`) at once, with a 5-second timeout. A server
+that does not answer stays in the list, with a null `version`.
+
+### Health
+
+| Tool           | What it does                                                        |
+| -------------- | ------------------------------------------------------------------- |
+| `list_targets` | Scrape targets with their health, last error, and last scrape (`/api/v1/targets`). |
+| `list_alerts`  | Alerts that are pending or firing (`/api/v1/alerts`).               |
+| `list_rules`   | Alerting and recording rules with their health and last error (`/api/v1/rules`). |
+
+These tools answer why data is missing or what Prometheus is alerting
+on. `list_targets` lists active targets by default; pass
+`state: "dropped"` or `"any"` to see the targets that relabeling
+removed. It filters by `health` and `job`, and shows each scrape URL
+without its user name or password. `list_alerts` filters by `state`
+(`firing` or `pending`). Prometheus lists only active alerts, so an
+alerting rule with no active alerts appears in `list_rules` with the
+state `inactive`. `list_rules` filters by `type` (`alert` or `record`)
+and by `group`, and includes each alerting rule's active alerts. All
+three page with `limit` and `offset`.
 
 ### Query
 

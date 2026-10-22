@@ -80,6 +80,11 @@ filterwarnings = ["error"]
 [tool.coverage.report]
 exclude_also = ["\\.\\.\\.$"]
 
+[[tool.mypy.overrides]]
+# asciichartpy ships no type information.
+module = ["asciichartpy"]
+ignore_missing_imports = true
+
 [tool.pyright]
 include = ["src", "tests"]
 typeCheckingMode = "strict"

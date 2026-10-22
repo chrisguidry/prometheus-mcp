@@ -29,6 +29,7 @@ __all__ = [
     "UnknownServerError",
     "get_server",
     "load_servers",
+    "without_credentials",
 ]
 
 _SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -71,9 +72,14 @@ class ServerConfig:
         httpx sends a URL's user name and password as basic authentication, so
         an operator can put credentials in the URL. Show this form instead.
         """
-        parts = urlsplit(self.url)
-        host = parts.netloc.rpartition("@")[2]
-        return urlunsplit(parts._replace(netloc=host))
+        return without_credentials(self.url)
+
+
+def without_credentials(url: str) -> str:
+    """Remove the user name and password from ``url``, and keep the rest."""
+    parts = urlsplit(url)
+    host = parts.netloc.rpartition("@")[2]
+    return urlunsplit(parts._replace(netloc=host))
 
 
 def load_servers(env: Mapping[str, str] | None = None) -> dict[str, ServerConfig]:

@@ -19,7 +19,8 @@ from datetime import UTC, datetime, timedelta
 
 __all__ = [
     "TimeRangeError",
-    "format_duration_human",
+    "event_time",
+    "format_duration",
     "parse_duration",
     "parse_range",
     "parse_step",
@@ -27,12 +28,28 @@ __all__ = [
 ]
 
 
-def format_duration_human(value: timedelta) -> str:
-    """Render a duration for display (e.g. ``"30s"`` or ``"500ms"``)."""
+def format_duration(value: timedelta) -> str:
+    """Render a duration as Prometheus writes one (e.g. ``"30s"`` or ``"500ms"``).
+
+    Whole seconds render as ``Ns``. Anything else renders as ``Nms``, because
+    Prometheus's duration grammar rejects a fractional number of seconds.
+    """
     seconds = value.total_seconds()
     if seconds.is_integer():
         return f"{int(seconds)}s"
     return f"{round(seconds * 1_000)}ms"
+
+
+# Prometheus is written in Go, and it reports the zero value of Go's time.Time
+# for an event that never happened, such as the last scrape of a new target.
+_GO_ZERO_TIME = "0001-01-01T00:00:00Z"
+
+
+def event_time(value: object) -> str | None:
+    """The RFC-3339 time Prometheus reports for an event, or None for never."""
+    if not isinstance(value, str) or not value or value == _GO_ZERO_TIME:
+        return None
+    return value
 
 
 class TimeRangeError(ValueError):
