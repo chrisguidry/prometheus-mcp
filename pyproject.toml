@@ -7,15 +7,13 @@ name = "prometheus-mcp"
 dynamic = ["version"]
 description = "An MCP server for querying multiple Prometheus instances, with PromQL passthrough and ASCII-art charts for agents."
 readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.12"
+requires-python = ">=3.15"
 license = { file = "LICENSE" }
 authors = [{ name = "Chris Guidry", email = "guid@omg.lol" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: System :: Monitoring",
@@ -57,7 +55,7 @@ source = "vcs"
 packages = ["src/prometheus_mcp"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py315"
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["fastmcp.dependencies.Shared"]
@@ -75,7 +73,15 @@ addopts = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # py-key-value-aio runs beartype on its own classes under pytest, and
+    # beartype calls isinstance() on their AsyncKeyValue protocol, which is
+    # not @runtime_checkable.  Python 3.15 deprecates that call, so beartype
+    # skips those classes and warns that it did.  Only py-key-value-aio
+    # brings beartype in, so the whole category is safe to ignore.
+    "ignore::beartype.roar.BeartypeClawDecorWarning",
+]
 
 [tool.coverage.report]
 exclude_also = ["\\.\\.\\.$"]

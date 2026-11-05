@@ -92,7 +92,7 @@ _EMPTY_HINT = (
 def _parse_value(raw: object) -> float | None:
     try:
         value = float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return None if math.isnan(value) else value
 
