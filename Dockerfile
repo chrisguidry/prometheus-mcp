@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 # git is a build dependency: hatch-vcs reads the version from the repository
 RUN apt-get update \
