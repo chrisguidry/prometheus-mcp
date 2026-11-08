@@ -8,3 +8,7 @@ htmlcov
 .ruff_cache
 .mypy_cache
 .loq_cache
+.claude
+.envrc
+plans
+tests
