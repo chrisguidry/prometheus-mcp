@@ -233,6 +233,17 @@ uv run pytest               # 100% branch coverage
 uv run prek run --all-files # lint, type-check, file-size limits
 ```
 
+## Container image
+
+The container image serves the MCP server over HTTP on port 9000.  Build it
+with `docker buildx bake`, which reads `docker-bake.hcl`, the same file CI
+publishes from:
+
+```bash
+docker buildx bake --load
+docker run --rm -p 9000:9000 ghcr.io/chrisguidry/prometheus-mcp:dev
+```
+
 ## License
 
 MIT.
