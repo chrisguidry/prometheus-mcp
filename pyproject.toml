@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "asciichartpy>=1.5.25",
-    "fastmcp>=4.1.5",
+    "fastmcp>=4.1.6",
     "httpx>=0.28.1",
 ]
 
@@ -37,15 +37,15 @@ dev = [
     "codespell>=2.4.3",
     "loq>=0.2.0",
     "mypy>=2.4.1",
-    "prek>=0.5.9",
+    "prek>=0.5.10",
     "pyright>=1.1.414",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=7.1.0",
-    "pytest-randomly>=5.0.0",
+    "pytest-randomly>=5.1.0",
     "pytest-timeout>=2.4.0",
     "respx>=0.23.1",
-    "ruff>=0.17.3",
+    "ruff>=0.17.4",
 ]
 
 [tool.hatch.version]
