@@ -36,7 +36,6 @@ prometheus-mcp = "prometheus_mcp.__main__:main"
 dev = [
     "codespell>=2.4.3",
     "loq>=0.2.0",
-    "mypy>=2.4.1",
     "prek>=0.5.10",
     "pyright>=1.1.414",
     "pytest>=9.2.0",
@@ -85,11 +84,6 @@ filterwarnings = [
 
 [tool.coverage.report]
 exclude_also = ["\\.\\.\\.$"]
-
-[[tool.mypy.overrides]]
-# asciichartpy ships no type information.
-module = ["asciichartpy"]
-ignore_missing_imports = true
 
 [tool.pyright]
 include = ["src", "tests"]
